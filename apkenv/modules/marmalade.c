@@ -620,6 +620,22 @@ marmalade_CallVoidMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
 {
     jmethodID method = p2;
 
+    /* DIAG: tally which engine->loader methods are called, dump every ~200k calls
+     * so we can see what the engine hammers when it appears stuck. */
+    {
+        static unsigned long s_total=0; static unsigned long s_dy=0,s_sw=0,s_dd=0,s_gi=0,s_gr=0,s_other=0;
+        s_total++;
+        if(method_is(deviceYield)) s_dy++;
+        else if(method_is(glSwapBuffers)) s_sw++;
+        else if(method_is(doDraw)) s_dd++;
+        else if(method_is(glInit)) s_gi++;
+        else if(method_is(glReInit)) s_gr++;
+        else { s_other++; fprintf(stderr,"[MARMCALL] %s\n", method->name); }
+        if((s_total % 200000)==0)
+            fprintf(stderr,"[MARMTALLY] total=%lu deviceYield=%lu swap=%lu doDraw=%lu glInit=%lu glReInit=%lu other=%lu\n",
+                    s_total,s_dy,s_sw,s_dd,s_gi,s_gr,s_other);
+    }
+
     if(method_is(glReInit))
     {
         MODULE_DEBUG_PRINTF("TODO: implement glReInit\n");
@@ -630,10 +646,19 @@ marmalade_CallVoidMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
     }
     else if(method_is(glSwapBuffers))
     {
-        if (marmalade_priv.global->platform->input_update(marmalade_priv.module)) {
-            // FIXME: do something to make runNative return (shutdownNative crashes)
-            exit(1);
-        }
+        /* input_update returns nonzero on a webOS pause/focus-loss event. The
+         * engine's runNative is a blocking loop we can't cleanly unwind
+         * (shutdownNative crashes), so don't exit(1) on it — that was killing the
+         * app on any card switch / screen blank mid-test. Just keep running. */
+        marmalade_priv.global->platform->input_update(marmalade_priv.module);
+
+        /* Marmalade has a 2-thread model: the engine thread posts work (GL/view
+         * ops, deploy steps) to the OS/UI thread and blocks waiting for it. We run
+         * the engine on one thread, so we MUST drain that OS-thread queue here by
+         * calling runOnOSTickNative — otherwise the engine queues work, waits
+         * forever (a nanosleep poll loop), and the game never finishes loading. */
+        if(marmalade_priv.loaderthread.runOnOSTickNative)
+            marmalade_priv.loaderthread.runOnOSTickNative(ENV(marmalade_priv.global),marmalade_priv.theloaderthread);
 
         if(marmalade_priv.accel_started) {
             float x, y, z;
@@ -657,6 +682,10 @@ marmalade_CallVoidMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
          * render, and taps during idle were never delivered. Pump SDL here too
          * so input reaches the engine even when it isn't drawing a new frame. */
         marmalade_priv.global->platform->input_update(marmalade_priv.module);
+        /* Also drain the OS-thread work queue while the engine yields/waits, so a
+         * blocked engine-thread handoff (e.g. during the game load) can complete. */
+        if(marmalade_priv.loaderthread.runOnOSTickNative)
+            marmalade_priv.loaderthread.runOnOSTickNative(ENV(marmalade_priv.global),marmalade_priv.theloaderthread);
     }
     else if(method_is(deviceUnYield))
     {
