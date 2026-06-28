@@ -273,3 +273,32 @@ assets) instead of 1280×800, and/or trim the loaded asset set, to fit memory.
 Where the engine picks 1280×800 (s3eConfig? surface query? the .dz's resolution
 dirs?) is the thread to pull. Everything is committed; resources staged on-device
 at `/media/internal/.apkenv/pvzhd.apk/`.
+
+### 2026-06-28 (part 6) — PvZ HD: resources load, but the engine deadlocks on a worker (memory ruled out).
+
+After deploying the unpacked tree, the resource-hunt loop is gone — but the menu
+is unresponsive and RSS sits at ~381 MB. Ruled things OUT methodically:
+- **Extraction is byte-perfect**: re-validated all 477 files decompress to EXACTLY
+  their declared sizes (0 mismatches). Not corrupt files.
+- **Images are NOT the memory hog**: uniformly downscaled all images to 25% pixel
+  area (Pillow 0.5x) + dropped zh.lproj → **RSS unchanged (383→381 MB)**. So the
+  ~330 MB over the menu baseline is a **fixed engine allocation** (a memory pool),
+  not the textures. The user's instinct ("Options isn't 400 MB") was right.
+- **Not a busy-loop**: threads sampled — main thread `futex_wait_queue_me` (parsed
+  the gdbserver reg packet: r7=0xf0=ARM futex syscall, PC in libc not libpvz), the
+  other workers `poll_schedule_timeout`, one in the display driver
+  (`mdp4_overlay_vsync_push`). Low CPU (~12%). So the engine is **BLOCKED on a
+  pthread lock/cond during the load**, waiting on a worker that never signals.
+
+**Conclusion**: PvZ HD reaches a **multi-threaded load deadlock** — the same class
+as WMW2's wall (`[[wrapper-spike-progress]]` / STAGE-5 pt4), now reached because
+the resources actually load. Couldn't get the exact frame (no ARM gdb / no sudo to
+install gdb-multiarch / libpvz stripped to 171 dynsyms). Memory (~380 MB fixed
+pool) is a secondary concern — the process survives at that RSS; the deadlock is
+the blocker.
+
+**Net**: PvZ HD is the furthest any candidate has gotten via a NEW engine
+(Marmalade) — boots, renders, touch works, **Derbh archive cracked + extractor
+built/validated (`apkenv/tools/derbh_extract.py`)**, resources deployed — but the
+final blocker is the recurring multi-threaded-load deadlock, a real GL/threading
+project (would unlock WMW2 too), not a quick fix.
