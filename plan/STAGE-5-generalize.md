@@ -242,3 +242,34 @@ FBO/touch reused; 2 general bugs fixed; boots/menu/audio/assets/enters-level) an
 its remaining blocker is precisely diagnosed (multi-threaded GL), which is a
 focused engineering project (GL threading), not open-ended debugging. Diagnostics
 (`[PTHREAD]`, `[FBOPRES]`) left in for the resume.
+
+### 2026-06-28 (part 5) — PvZ HD (Marmalade/Airplay): the unpack works; blocker marched forward.
+
+Big chain of progress bringing up **PvZ HD v1.1** (best catalog candidate):
+1. **Engine**: Airplay/Marmalade → drove it with the existing `modules/marmalade.c`
+   (wired into the webOS build). **Boots to a rendering main menu** first try.
+2. **Touch delivery FIXED** (general marmalade win): runNative blocks + only pumped
+   SDL on glSwapBuffers; a static menu idles via `s3eDeviceYield` w/o rendering →
+   taps dropped. Now pump `input_update` on deviceYield too → all taps reach the
+   engine (correct coords + `onMotionEvent(pointerId, androidAction+4, x,y)`).
+   Also removed the `glSwapBuffers` `exit(1)`-on-focus-loss fragility.
+3. **"Start adventure" spun**: strace showed the engine looping `open()` on an
+   **empty** `…/.apkenv/pvzhd.apk/compiled/` — hunting resources packed in
+   `assets/PvZ.dz` (Marmalade **Derbh**/DTRZ archive) that the module's
+   `// TODO: extract files` never unpacks. (The §8 "unpack in advance" lesson.)
+4. **Cracked Derbh + built `apkenv/tools/derbh_extract.py`** — validated extraction
+   of all **477** PvZ resources (PNG/JPG/WAV magics + 218 `.compiled` deadfeed
+   files), full path tree (incl. `1280x800/` resolution dirs). LZMA-Alone + raw
+   zlib + stored; handles PvZ.dz's **unsorted** payload offsets. Pushed the tree
+   into the engine's data dir.
+5. **Result**: the file-hunt loop is **RESOLVED** (strace: 0 file opens; engine no
+   longer spins). Touch still delivered. **NEW blocker: memory** — with resources
+   present the engine loads them eagerly and RSS climbs to **~400 MB** (top RSS
+   user per powerlog) → webOS kills it. Almost certainly tied to the **1280×800**
+   asset set (large/duplicate-resolution textures).
+
+**Next step:** make the engine target **1024×768** (matches the TouchPad + smaller
+assets) instead of 1280×800, and/or trim the loaded asset set, to fit memory.
+Where the engine picks 1280×800 (s3eConfig? surface query? the .dz's resolution
+dirs?) is the thread to pull. Everything is committed; resources staged on-device
+at `/media/internal/.apkenv/pvzhd.apk/`.
