@@ -55,6 +55,7 @@ build/
 *.apkenv.so
 libdvm_compat.so
 hostui
+dist/
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logs, cores, scratch
