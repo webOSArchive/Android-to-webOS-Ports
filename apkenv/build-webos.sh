@@ -14,6 +14,50 @@
 set -e
 cd "$(dirname "$0")"
 
+# ── Harvest device-only libraries (fail fast if a device is needed but absent) ─
+# HP's libEGL.so is proprietary and NOT in the PalmPDK SDK, so it must come off a
+# real device. We pull it over novacom (USB) — the same transport the rest of the
+# toolkit uses — and cache it in devlibs/. A connected TouchPad is therefore
+# required for the FIRST build (and any time a harvested lib is missing);
+# subsequent builds reuse the cache and need no device.
+harvest_device_libs() {
+    mkdir -p devlibs
+    # "<device-path>:<local-path>" pairs for libs only the device has
+    local needed="/usr/lib/libEGL.so:devlibs/libEGL.so"
+    local missing=""
+    for pair in $needed; do
+        [ -s "${pair##*:}" ] || missing="$missing $pair"
+    done
+    if [ -z "$missing" ]; then
+        echo "device libs: present (cached) — no device needed"
+        return 0
+    fi
+
+    if ! command -v novacom >/dev/null 2>&1; then
+        echo "ERROR: device libraries are missing and 'novacom' is not installed." >&2
+        echo "       Install the webOS SDK and connect a TouchPad over USB, then retry." >&2
+        exit 1
+    fi
+    if [ -z "$(novacom -l 2>/dev/null)" ]; then
+        echo "ERROR: no webOS device connected." >&2
+        echo "       Building needs a TouchPad on USB (novacom) to harvest HP's" >&2
+        echo "       proprietary libEGL.so, which is not in the PalmPDK SDK." >&2
+        echo "       Connect the device (Developer Mode enabled) and re-run ./build-webos.sh." >&2
+        exit 1
+    fi
+
+    for pair in $missing; do
+        src="${pair%%:*}"; dst="${pair##*:}"
+        echo "HARVEST (novacom) $src -> $dst"
+        if ! novacom get "file://$src" > "$dst" 2>/dev/null || [ ! -s "$dst" ]; then
+            rm -f "$dst"
+            echo "ERROR: failed to pull $src from the device via novacom." >&2
+            exit 1
+        fi
+    done
+}
+harvest_device_libs
+
 CC13=arm-linux-gnueabi-gcc-13
 GCC13_INC=$(${CC13} -print-file-name=include)
 PDK=/opt/PalmPDK

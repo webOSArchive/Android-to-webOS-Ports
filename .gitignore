@@ -11,9 +11,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Game code & copyrighted content — NEVER COMMIT
 # ─────────────────────────────────────────────────────────────────────────────
-# Android game packages (candidates, working copies, anything)
+# Android game packages (candidates, working copies, anything) — but keep the
+# android-candidates/ folder + its README (drop-your-donor-apks-here marker).
 *.apk
-android-candidates/
 # Built webOS packages — the .ipk BUNDLES the game apk, so it is game content too
 *.ipk
 # Extracted / patched game engine binaries
@@ -32,16 +32,16 @@ SDL_*.png
 **/packaging/*.apk
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Prebuilt shared libraries — NOT source. This is a source/docs/scripts toolkit;
-# the bionic runtime libs are harvested from a device/SDK and linked at build
-# time (libs/webos/, devlibs/libEGL.so), and upstream apkenv's other-platform
-# libs (libs/harmattan, libs/pandora, …) are irrelevant here. Keep all prebuilt
-# .so out of the repo — note libEGL is HP-proprietary and several are Google
-# bionic. (Document where to harvest them in the build README instead.)
+# Proprietary / device-harvested binaries — NOT committed.
+# HP's libEGL is proprietary and not in the PalmPDK SDK, so build-webos.sh
+# harvests it from a connected device (novacom) into apkenv/devlibs/ at build
+# time. The FOSS Android bionic runtime libs in apkenv/libs/webos/
+# (libc/libm/libstdc++/liblog/libz) ARE committed — they are the porter's
+# runtime payload, not device-specific.
 # ─────────────────────────────────────────────────────────────────────────────
-*.so
-**/staging-libs/
+libEGL.so
 **/devlibs/
+**/staging-libs/
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Build artifacts

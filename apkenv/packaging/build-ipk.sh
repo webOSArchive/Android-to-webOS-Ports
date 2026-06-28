@@ -16,12 +16,11 @@
 #   android/      <- the Android game .apk (engine .so + assets read from here)
 #
 # Inputs (defaults in parens):
-#   $1 / packaging/staging-libs   the harvested gingerbread bionic .so's. These
-#                                 live ONLY on the device (/var/apkenv/libs/webos)
-#                                 — pull them once:
-#        scp <legacy-opts> -r root@DEVICE:/var/apkenv/libs/webos packaging/staging-libs
+#   $1 / libs/webos      the FOSS bionic runtime libs (committed in the repo).
 #   $APK / packaging/wheresmywater.apk   the game apk to bundle (the patched,
-#                                 known-good one).
+#                        known-good one — NOT committed; bring your own).
+# libEGL.so (HP-proprietary) is harvested from a device into devlibs/ by
+# build-webos.sh; this script just copies it from there.
 #
 # Usage: packaging/build-ipk.sh [path-to-bionic-libs-dir]
 set -e
@@ -29,10 +28,11 @@ cd "$(dirname "$0")/.."          # -> apkenv/
 
 APPID=com.apkenv.wheresmywater
 STAGE=packaging/stage/$APPID
-LIBS=${1:-packaging/staging-libs}        # bionic .so's (from device)
+LIBS=${1:-libs/webos}                    # FOSS bionic .so's (committed)
 APK=${APK:-packaging/wheresmywater.apk}  # game apk to bundle
 
 [ -f apkenv ] || { echo "build the binary first: ./build-webos.sh"; exit 1; }
+[ -f devlibs/libEGL.so ] || { echo "missing devlibs/libEGL.so — run ./build-webos.sh (harvests it from a device)"; exit 1; }
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE/libs/webos" "$STAGE/android"
@@ -41,7 +41,7 @@ cp apkenv                       "$STAGE/apkenv"
 cp packaging/webos/appinfo.json "$STAGE/appinfo.json"
 cp packaging/webos/README       "$STAGE/README"
 chmod +x "$STAGE/apkenv"
-cp devlibs/libEGL.so            "$STAGE/libs/webos/" 2>/dev/null || true
+cp devlibs/libEGL.so            "$STAGE/libs/webos/"   # harvested device lib
 
 # bundle the Android game (the "android bits")
 if [ -f "$APK" ]; then
@@ -69,14 +69,14 @@ else
     echo "WARNING: no icon.png and no apk to extract one from"
 fi
 
-if [ -d "$LIBS" ]; then
+if [ -d "$LIBS" ] && ls "$LIBS"/*.so >/dev/null 2>&1; then
     cp "$LIBS"/*.so "$STAGE/libs/webos/" 2>/dev/null || true
     echo "bundled bionic libs from $LIBS:"
     ls "$STAGE/libs/webos/"
 else
-    echo "WARNING: bionic libs dir '$LIBS' not found — the .ipk will install but"
+    echo "WARNING: bionic libs dir '$LIBS' has no .so — the .ipk will install but"
     echo "         WILL NOT RUN without libc/libm/libstdc++/liblog/libz in libs/webos/."
-    echo "         Pull them from the device first (see header)."
+    echo "         These are committed at apkenv/libs/webos/; restore them if missing."
 fi
 
 # palm-package lives in PalmSDK (/usr/local/bin or /opt/PalmSDK/Current/bin).
