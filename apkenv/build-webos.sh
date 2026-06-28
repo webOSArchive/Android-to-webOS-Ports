@@ -107,6 +107,7 @@ SOURCES="$SOURCES $(ls platform/common/*.c)"
 SOURCES="$SOURCES platform/webos.c"
 SOURCES="$SOURCES modules/wheresmywater.c"
 SOURCES="$SOURCES modules/wheresmywater2.c"
+SOURCES="$SOURCES modules/marmalade.c"
 
 OBJS=""
 for src in $SOURCES; do

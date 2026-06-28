@@ -652,6 +652,11 @@ marmalade_CallVoidMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
     }
     else if(method_is(deviceYield))
     {
+        /* The engine yields (sleeps) while idle (e.g. a static menu waiting for
+         * input) WITHOUT calling glSwapBuffers — so input was only pumped on
+         * render, and taps during idle were never delivered. Pump SDL here too
+         * so input reaches the engine even when it isn't drawing a new frame. */
+        marmalade_priv.global->platform->input_update(marmalade_priv.module);
     }
     else if(method_is(deviceUnYield))
     {
@@ -965,9 +970,15 @@ marmalade_input(struct SupportModule *self, int event, int x, int y, int finger)
            MODULE_DEBUG_PRINTF("onMotionEvent: move\n");
        }
 
+       fprintf(stderr, "[MARMTOUCH] event=%d action=%d finger=%d x=%d y=%d\n",
+               event, action, finger, x, y);
        self->priv->loaderthread.onMotionEvent(ENV_M,self->priv->theloaderthread,finger,action, x,y);
 
        MODULE_DEBUG_PRINTF("onMotionEvent done.\n");
+   }
+   else
+   {
+       fprintf(stderr, "[MARMTOUCH] DROPPED (no onMotionEvent) event=%d x=%d y=%d\n", event, x, y);
    }
 }
 
