@@ -206,6 +206,11 @@ static struct { int finger, action, x, y; } marm_touchq[MARM_TOUCHQ];
 static volatile int marm_touchq_head = 0, marm_touchq_tail = 0;
 static pthread_mutex_t marm_touchq_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/* Frames presented (glSwapBuffers). The OS/UI thread watches this to detect when
+ * the engine stalls (app threads got suspended) and resumes them at the RIGHT
+ * time, instead of a racy fixed-delay resume. */
+static volatile unsigned long marm_swap_count = 0;
+
 #define MARMALADE_LOADERTHREAD "com/ideaworks3d/marmalade/LoaderThread"
 #define MARMALADE_LOADERVIEW "com/ideaworks3d/marmalade/LoaderView"
 #define MARMALADE_LOADERKEYBOARD "com/ideaworks3d/marmalade/LoaderKeyboard"
@@ -655,6 +660,7 @@ marmalade_CallVoidMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
     }
     else if(method_is(glSwapBuffers))
     {
+        marm_swap_count++;
         /* input_update returns nonzero on a webOS pause/focus-loss event. The
          * engine's runNative is a blocking loop we can't cleanly unwind
          * (shutdownNative crashes), so don't exit(1) on it — that was killing the
@@ -922,7 +928,7 @@ marmalade_os_thread(void *arg)
 {
     JNIEnv *thread_env;
     (*VM(marmalade_priv.global))->AttachCurrentThread(VM(marmalade_priv.global), &thread_env, NULL);
-    unsigned long ticks = 0;
+    unsigned long ticks = 0, last_swap = 0, stall = 0, last_resume = 0;
     for(;;) {
         /* Replay queued taps via onMotionEvent on THIS (UI) thread. */
         pthread_mutex_lock(&marm_touchq_lock);
@@ -943,13 +949,22 @@ marmalade_os_thread(void *arg)
                                                           marmalade_priv.theloaderthread);
         /* On Android the GL-surface lifecycle (AirplayView.surfaceChanged) calls
          * resumeAppThreads once the surface is ready; without a SurfaceView the
-         * engine's app threads can be left SUSPENDED after a transition, so the
-         * menu logic stops running and taps that reach onMotionEvent are never
-         * processed. Periodically resume the app threads to release that wedge. */
-        if((++ticks) == 1500 && marmalade_priv.loaderthread.resumeAppThreads) {
-            fprintf(stderr, "[MARM-OS] resumeAppThreads ONCE (tick %lu)\n", ticks);
+         * engine's app threads get left SUSPENDED, so the menu freezes and taps
+         * that reach onMotionEvent are never processed. A fixed-delay resume is
+         * racy (may fire before the suspend). Instead, watch the frame counter:
+         * when rendering STALLS (suspended) — or never starts — resume the app
+         * threads, rate-limited so we don't over-resume a single stall. */
+        ticks++;
+        unsigned long sc = marm_swap_count;
+        if(sc != last_swap) { last_swap = sc; stall = 0; }
+        else                  stall++;
+        if(marmalade_priv.loaderthread.resumeAppThreads &&
+           (ticks - last_resume) > 2500 &&
+           ((sc > 30 && stall > 1200) || (sc == 0 && ticks > 4000))) {
+            fprintf(stderr, "[MARM-OS] stall (frames=%lu) -> resumeAppThreads\n", sc);
             marmalade_priv.loaderthread.resumeAppThreads(ENV(marmalade_priv.global),
                                                          marmalade_priv.theloaderthread);
+            last_resume = ticks; stall = 0;
         }
         usleep(1000);
     }
