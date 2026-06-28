@@ -302,3 +302,23 @@ the blocker.
 built/validated (`apkenv/tools/derbh_extract.py`)**, resources deployed — but the
 final blocker is the recurring multi-threaded-load deadlock, a real GL/threading
 project (would unlock WMW2 too), not a quick fix.
+
+### 2026-06-28 (part 7) — PvZ HD: the menu THIEF was suspended app-threads (user was right: NOT coordinates).
+Chased to the real cause: the engine renders the menu but **app threads were left
+SUSPENDED** — on Android the GL-surface lifecycle (`AirplayView.surfaceChanged`)
+calls `resumeAppThreads` once the surface is ready; our shim has no SurfaceView so
+it never fired. A suspended app receives `onMotionEvent` but never processes it →
+taps stolen, menu frozen. Fixes landed in `modules/marmalade.c`:
+1. **OS/UI thread** (`marmalade_os_thread`) — Marmalade is a 2-thread model
+   (engine thread ↔ UI thread); spawn a real UI thread that drains
+   `runOnOSTickNative` and owns touch delivery.
+2. **resumeAppThreads** — stall-triggered (watch `marm_swap_count`; resume when
+   rendering stalls / never starts). Un-freezes the engine (0→3000 GL ioctls/s).
+3. **UI-thread touch** — queue taps from the render thread, replay via
+   `onMotionEvent` FROM the OS/UI thread (matches Android), to fix tap propagation.
+**Clean-boot finding:** the suspend was largely the THRASHED/low-RAM device. After
+a novacom reboot (483MB free) the app runs WITHOUT needing the resume — renders the
+menu stably (state S, 381MB, not spinning). **Stability = memory headroom**: the
+~269MB engine pool + apkenv needs a fresh-ish device; `/var/apkenv2/play-pvz.sh`
+frees background-service RAM and launches. OPEN: user touch test pending (does the
+UI-thread touch queue make the menu respond).
