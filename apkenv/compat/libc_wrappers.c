@@ -162,11 +162,39 @@ my_fmod(double __x, double __y)
     WRAPPERS_DEBUG_PRINTF("fmod()\n", __x, __y);
     return fmod(__x, __y);
 }
+/* Asset-root redirect. Many Android NDK engines load on-demand assets via
+ * ABSOLUTE paths (e.g. "/Water/Textures/x.png") that Android's resource layer
+ * maps into the app's assets/. On webOS those hit the real "/" and fail. On a
+ * read miss for an absolute path, retry under $APKENV_ASSET_ROOT (the extracted
+ * assets dir). General — any game with this load pattern. (The engine's own
+ * ZipArchive preloads work without this; only the fopen path needs it.) */
+static const char *
+asset_root_path(const char *filename, char *buf, size_t buflen)
+{
+    const char *root;
+    if (!filename || filename[0] != '/')
+        return NULL;
+    root = getenv("APKENV_ASSET_ROOT");
+    if (!root || !*root)
+        return NULL;
+    snprintf(buf, buflen, "%s%s", root, filename);
+    return buf;
+}
+
 FILE *
 my_fopen(__const char *__restrict __filename, __const char *__restrict __modes)
 {
     WRAPPERS_DEBUG_PRINTF("fopen(%s, %s)\n", __filename, __modes);
     FILE  *f = fopen(__filename,__modes);
+    if (f == NULL && __modes && strchr(__modes, 'r')) {
+        char buf[4096];
+        const char *alt = asset_root_path(__filename, buf, sizeof(buf));
+        if (alt) {
+            f = fopen(alt, __modes);
+            WRAPPERS_DEBUG_PRINTF("fopen asset-redirect %s -> %s : %s\n",
+                                  __filename, alt, f ? "OK" : "miss");
+        }
+    }
     WRAPPERS_DEBUG_PRINTF("fopen(%s, %s) -> %x\n", __filename, __modes, f);
     return f;
 }
@@ -506,7 +534,13 @@ int
 my_open(__const char *__file, int __oflag, ...)
 {
     WRAPPERS_DEBUG_PRINTF("open()\n", __file, __oflag);
-    return open(__file, __oflag);
+    int fd = open(__file, __oflag);
+    if (fd < 0 && (__oflag & (O_WRONLY | O_RDWR)) == 0) {  /* read-only redirect */
+        char buf[4096];
+        const char *alt = asset_root_path(__file, buf, sizeof(buf));
+        if (alt) fd = open(alt, __oflag);
+    }
+    return fd;
 }
 double
 my_pow(double __x, double __y)

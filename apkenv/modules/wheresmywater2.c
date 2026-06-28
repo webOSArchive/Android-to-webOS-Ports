@@ -157,21 +157,45 @@ wheresmywater2_init(struct SupportModule *self, int width, int height, const cha
     w2_bridge_init(self, W2_BR("AppEvents_BridgeAudioAppInfo"));
     w2_bridge_init(self, W2_BR("AppEvents_BridgeGameFlowEvents"));
 
-    /* (2) master init. The 9 args are (per d.smali): two path/id strings, a data
-     * directory path, an int config, language, country, and three more id/path
-     * strings. We pass the apk path + writable home + locale; the exact mapping
-     * needs on-device confirmation. [BRINGUP] */
+    /* (2) master init. The 9 args, mapped from the deobfuscated `as` storage-paths
+     * helper (which feeds WalaberChassisStartup in d.smali):
+     *   1 sourceDir   = the apk path            (asset source)
+     *   2 dataDir     = WRITABLE dir            (progress.db / perry.db live here)
+     *   3 cacheDir    = WRITABLE dir            (getCacheDir)
+     *   4 int         = At.a()                  (config; 0)
+     *   5 language    6 country
+     *   7 aq.a()      = version/id string       ("" tolerated)
+     *   8 d()         = WRITABLE dir            (cache-ish)
+     *   9 e()         = WRITABLE dir            (getExternalFilesDir)
+     * The writable args MUST be real writable directories — passing the apk path
+     * made the engine write its DBs into the apk path and corrupt the heap. We
+     * use apkenv's data dir (`home`, already created + writable) for all of them. */
     jstring apk  = (*env)->NewStringUTF(env, GLOBAL_M->apk_filename);
     jstring data = (*env)->NewStringUTF(env, home);
+    jstring cache= (*env)->NewStringUTF(env, home);
     jstring lang = (*env)->NewStringUTF(env, "en");
     jstring ctry = (*env)->NewStringUTF(env, "US");
-    jstring empty = (*env)->NewStringUTF(env, "");
-    p->chassisStartup(env, (jobject)GLOBAL_M, apk, apk, data, 0,
-                      lang, ctry, apk, empty, empty);
+    jstring ver  = (*env)->NewStringUTF(env, "");
+    jstring ext  = (*env)->NewStringUTF(env, home);
+    jstring ext2 = (*env)->NewStringUTF(env, home);
+    p->chassisStartup(env, (jobject)GLOBAL_M, apk, data, cache, 0,
+                      lang, ctry, ver, ext, ext2);
 
-    /* (3) renderer bring-up. jniRenderInit(w, h, xdpi, ydpi) — TouchPad ~132 dpi.
-     * [BRINGUP: dpi affects UI scaling; tune on device] */
-    p->renderInit(env, (jobject)GLOBAL_M, width, height, 132.0f, 132.0f);
+    /* (3) renderer bring-up. jniRenderInit(widthPx, heightPx, physWmm, physHmm) —
+     * the engine's RenderInit derives the last two floats as PHYSICAL SIZE IN
+     * MILLIMETRES (widthPx/dpi*25.4), and uses them to scale the level render.
+     * Passing dpi (132) made it think the panel was 132x132mm and shrink the
+     * level to 0.75 (anchored bottom-left). TouchPad is ~132 dpi → real size is
+     * ~197x148mm. [tune APKENV_WMW2_DPI if the in-level scale is off] */
+    {
+        const char *d = getenv("APKENV_WMW2_DPI");
+        float dpi = d ? (float)atof(d) : 132.0f;
+        float mmw = (float)width  / dpi * 25.4f;
+        float mmh = (float)height / dpi * 25.4f;
+        fprintf(stderr, "wheresmywater2_init: renderInit(%d,%d, %.1fmm,%.1fmm) dpi=%.0f\n",
+                width, height, mmw, mmh, dpi);
+        p->renderInit(env, (jobject)GLOBAL_M, width, height, mmw, mmh);
+    }
     if (p->renderAreaCreated) p->renderAreaCreated(env, (jobject)GLOBAL_M);
     if (p->renderAreaResized) p->renderAreaResized(env, (jobject)GLOBAL_M, width, height);
 

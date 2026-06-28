@@ -2471,12 +2471,18 @@ JNIEnv_GetStringUTFChars(JNIEnv *env, jstring string, jboolean *isCopy)
         JNIENV_DEBUG_PRINTF("WARNING: GetStringUTFChars on global\n");
         return NULL;
     }
+    if (isCopy) *isCopy = JNI_TRUE;
     if (string == NULL) {
         return strdup("");
     }
     struct dummy_jstring *str = (struct dummy_jstring*)string;
     JNIENV_DEBUG_PRINTF(" \\-> %s\n", str->data);
-    return str->data;
+    /* Return a COPY (the faithful JNI contract): ReleaseStringUTFChars frees what
+     * we return here, so handing back str->data directly would free the jstring's
+     * own buffer and corrupt it on the next Get — a latent use-after-free that
+     * bites any engine which Get/Releases the same jstring more than once (e.g.
+     * WMW2 reusing path args -> garbage strings + double-free). */
+    return strdup(str->data ? str->data : "");
 }
 
 void
