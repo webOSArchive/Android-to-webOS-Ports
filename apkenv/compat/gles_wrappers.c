@@ -549,12 +549,34 @@ apkenv_fbo_present(void)
     functions.glPushMatrix();
     functions.glLoadIdentity();
 
+    /* Sample only the region the engine actually rendered (its last viewport),
+     * scaled to fill the screen — games render the level at a sub-viewport
+     * (WMW2: 576x768 of the 768x1024 FBO, anchored bottom-left), so presenting
+     * the FULL FBO would show it shrunk + black. Map the static rot pattern's
+     * 0/1 corners onto [umin,umax]x[vmin,vmax] of the FBO texture. Only when the
+     * engine ended the frame on the screen FBO (bound_fbo==0) and the viewport
+     * is sane; otherwise fall back to the full FBO. */
+    const GLfloat *tcp = texc[apkenv_fbo_rot & 3];
+    GLfloat tc[8];
+    int fw = global_module_hacks.fbo_w, fh = global_module_hacks.fbo_h;
+    if (apkenv_bound_fbo == 0 && fw > 0 && fh > 0 &&
+        s_vp[2] > 0 && s_vp[3] > 0 &&
+        s_vp[0] + s_vp[2] <= fw && s_vp[1] + s_vp[3] <= fh) {
+        GLfloat umin = (GLfloat)s_vp[0] / fw, umax = (GLfloat)(s_vp[0] + s_vp[2]) / fw;
+        GLfloat vmin = (GLfloat)s_vp[1] / fh, vmax = (GLfloat)(s_vp[1] + s_vp[3]) / fh;
+        for (int i = 0; i < 4; i++) {
+            tc[i*2]   = tcp[i*2]   > 0.5f ? umax : umin;
+            tc[i*2+1] = tcp[i*2+1] > 0.5f ? vmax : vmin;
+        }
+        tcp = tc;
+    }
+
     functions.glEnableClientState(GL_VERTEX_ARRAY);
     functions.glEnableClientState(GL_TEXTURE_COORD_ARRAY);
     functions.glDisableClientState(GL_COLOR_ARRAY);
     functions.glDisableClientState(GL_NORMAL_ARRAY);
     functions.glVertexPointer(2, GL_FLOAT, 0, verts);
-    functions.glTexCoordPointer(2, GL_FLOAT, 0, texc[apkenv_fbo_rot & 3]);
+    functions.glTexCoordPointer(2, GL_FLOAT, 0, tcp);
     functions.glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
     functions.glMatrixMode(GL_PROJECTION);
