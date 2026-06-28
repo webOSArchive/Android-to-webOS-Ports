@@ -1,0 +1,22 @@
+*.d
+*.o
+cscope.out
+tags
+out
+apkenv
+*.apkenv.so
+libdvm_compat.so
+hostui
+compat/gen/gles_serialize.c
+
+# session logs and working binary patches (large, regenerable)
+*.log
+wmw-patch/
+
+# packaging build artifacts + copyrighted game icon
+packaging/out/
+packaging/stage/
+packaging/staging-libs/
+packaging/.icontmp/
+packaging/webos/icon.png
+packaging/*.apk

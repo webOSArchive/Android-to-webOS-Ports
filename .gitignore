@@ -1,0 +1,74 @@
+# .gitignore — Android-to-webOS-Ports
+#
+# This repo is the PORTING FRAMEWORK, toolkit, and docs ONLY — the apkenv-based
+# shim source, build/packaging scripts, per-game modules, and the methodology.
+# It must contain NO game code or copyrighted game content: this is a
+# bring-your-own-apk toolkit (ship the porter, not the games).
+#
+# Patterns are written WITHOUT a leading slash (or with **/) so they match at any
+# depth — the toolkit source lives under apkenv/, a subdirectory.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Game code & copyrighted content — NEVER COMMIT
+# ─────────────────────────────────────────────────────────────────────────────
+# Android game packages (candidates, working copies, anything)
+*.apk
+android-candidates/
+# Built webOS packages — the .ipk BUNDLES the game apk, so it is game content too
+*.ipk
+# Extracted / patched game engine binaries
+libwmw*.so
+libfmodex*.so
+wmw-patch/
+# Extracted game asset trees
+gameroot/
+# Game imagery (launcher icons & screenshots contain copyrighted game art)
+SDL_*.png
+**/packaging/webos/icon.png
+**/packaging/.icontmp/
+# Packaging staging/output (assembled from the game apk + harvested libs)
+**/packaging/out/
+**/packaging/stage/
+**/packaging/*.apk
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Prebuilt shared libraries — NOT source. This is a source/docs/scripts toolkit;
+# the bionic runtime libs are harvested from a device/SDK and linked at build
+# time (libs/webos/, devlibs/libEGL.so), and upstream apkenv's other-platform
+# libs (libs/harmattan, libs/pandora, …) are irrelevant here. Keep all prebuilt
+# .so out of the repo — note libEGL is HP-proprietary and several are Google
+# bionic. (Document where to harvest them in the build README instead.)
+# ─────────────────────────────────────────────────────────────────────────────
+*.so
+**/staging-libs/
+**/devlibs/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Build artifacts
+# ─────────────────────────────────────────────────────────────────────────────
+*.o
+*.d
+build/
+**/compat/gen/
+# compiled host binaries (output of build-webos.sh)
+/apkenv/apkenv
+*.apkenv.so
+libdvm_compat.so
+hostui
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Logs, cores, scratch
+# ─────────────────────────────────────────────────────────────────────────────
+*.log
+*.minicore
+core
+core.*
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Editor / OS noise
+# ─────────────────────────────────────────────────────────────────────────────
+.DS_Store
+tags
+cscope.out
+*.swp
+*.orig

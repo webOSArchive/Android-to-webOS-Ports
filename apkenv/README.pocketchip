@@ -1,0 +1,19 @@
+Pocket C.H.I.P
+==============
+
+Install dependencies:
+
+    sudo apt-get install build-essential chip-mali-userspace libpng12-dev libjpeg62-turbo-dev libsdl1.2-dev libsdl-mixer1.2-dev
+
+Needs build of the Eglo library:
+
+    make -C platform/pocketchip/eglo
+
+Build with:
+
+    make PLATFORM=pocketchip
+
+For games that don't work well with the low resolution, you can try to
+enable Eglo's experimental screen scaling feature (needs eglo 0.0.2):
+
+    env EGLO_SCALE=2 ./apkenv <...>

@@ -1,0 +1,10 @@
+{
+    "id": "com.apkenv.wheresmywater",
+    "version": "1.0.1",
+    "vendor": "apkenv",
+    "type": "pdk",
+    "main": "apkenv",
+    "title": "Where's My Water?",
+    "icon": "icon.png",
+    "requiredMemory": 64
+}

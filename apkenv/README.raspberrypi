@@ -1,0 +1,28 @@
+Raspberry Pi 3 Support
+======================
+
+Tested with Raspbian GNU/Linux 11 (bullseye), which uses hard-float ABI.
+
+Needs (list might be incomplete):
+
+    libegl-dev libsdl1.2-dev libgles-dev libgles2-mesa-dev libsdl-mixer1.2-dev
+
+Build with:
+
+    make PLATFORM=rpi3
+
+
+
+How to obtain Bionic libraries for the OG Raspberry Pi 1
+--------------------------------------------------------
+
+Download the image from http://androidpi.wikia.com/wiki/Android_Pi_Wiki
+
+Loop-mount the first ext4 partition in /mnt:
+www.linuxquestions.org/questions/linux-general-1/trouble-mounting-dd-image-file-644362/#post3660310t
+
+Copy files from the image:
+/mnt/system/lib/libm.so
+/mnt/system/lib/libc.so
+/mnt/system/lib/libstdc++.so
+

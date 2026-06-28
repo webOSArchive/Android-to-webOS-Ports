@@ -1,0 +1,55 @@
+apkenv — Android NDK game host for webOS (HP TouchPad)
+======================================================
+
+This webOS PDK app runs an Android NDK game *natively* on webOS, with NO ACL
+(OpenMobile's full Android runtime) and NO Dalvik. It is a slim apkenv-based
+shim: a gingerbread bionic linker loaded as a library + a fake-JNI layer + a
+webOS SDL/PDL backend + a per-game module. The Android game's own native .so
+(its engine) is loaded and driven directly through its JNI entry points.
+
+LAYOUT OF THIS APP DIRECTORY
+----------------------------
+  apkenv            The host binary (native ARM ELF). This is the apkenv runtime
+                    compiled for webOS. On launch it self-locates (/proc/self/exe),
+                    cd's here, picks the game under android/, and runs it.
+  appinfo.json      webOS app manifest (type:pdk, main:apkenv).
+  icon.png          Launcher icon.
+  README            This file.
+
+  libs/             webOS-SIDE host libraries (the "left half" of the shim).
+    webos/          apkenv loads these with its OWN userspace linker:
+      libc.so         } harvested Android 2.3 (gingerbread) bionic libraries —
+      libm.so         } the runtime the game's native code was built against.
+      libstdc++.so    }
+      liblog.so       }
+      libz.so         }
+      libdvm_compat.so  (unused unless Dalvik mode is on)
+      libEGL.so       webOS device EGL (pulled from the TouchPad).
+
+  android/          THE ANDROID BITS (the "right half" — the game itself).
+    *.apk           The Android NDK game, shipped whole. apkenv reads the
+                    engine's native libs (lib/armeabi-v7a/*.so) and all assets
+                    straight out of this .apk at runtime. For "Where's My Water?"
+                    this is wheresmywater.apk, with a 1-instruction libwmw patch
+                    baked in (std::string(NULL) -> "" instead of throwing).
+
+RUNTIME-WRITABLE DATA (not in this dir — the app dir is read-only at runtime)
+----------------------------------------------------------------------------
+  /media/internal/.apkenv/<apk-basename>/   savegames + the apk's extracted
+                                            native libs (apkenv writes here).
+  /media/internal/apkenv-wmw.log            this app's stdout/stderr (a jailed
+                                            PDK app's stdio goes nowhere else).
+
+RE-PACKING A DIFFERENT GAME
+---------------------------
+1. Drop the new game's .apk into android/ (remove the old one). apkenv launches
+   the first *.apk it finds there.
+2. Most games need a per-game MODULE (the apkenv source tree, modules/<game>.c):
+   it calls the game's real JNI entry points (rendererInit / drawFrame / touch /
+   lifecycle) with faked args, since there is no Java Activity. "Where's My
+   Water?" uses the built-in `wheresmywater` module. A new engine = a new module
+   (find its entry points with `baksmali` on classes.dex + readelf on the .so).
+3. Rebuild apkenv (build-webos.sh) and re-run packaging/build-ipk.sh.
+
+See the project tree (apkenv/) for the full source, build recipe, and the
+reverse-engineering notes (BUILD-STATE.md, ../plan/, android-port-shim.md).

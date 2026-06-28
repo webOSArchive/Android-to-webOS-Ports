@@ -1,0 +1,23 @@
+apkenv (42.23.0) unstable; urgency=low
+
+  * New release.
+
+ -- Thomas Perl <m@thp.io>  Thu, 16 Jul 2015 19:25:40 +0200
+
+apkenv (42.7.0) unstable; urgency=low
+
+  * New release.
+
+ -- Thomas Perl <m@thp.io>  Sat, 22 Mar 2014 14:34:48 +0100
+
+apkenv (42.3.15) unstable; urgency=low
+
+  * New Support Modules.
+
+ -- Thomas Perl <m@thp.io>  Sun, 23 Dec 2012 15:16:37 +0100
+
+apkenv (42.1.1) unstable; urgency=low
+
+  * Initial Release.
+
+ -- Thomas Perl <m@thp.io>  Wed, 21 Nov 2012 17:11:38 +0100
