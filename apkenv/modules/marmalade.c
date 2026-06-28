@@ -197,6 +197,15 @@ struct SupportModulePriv {
 
 static struct SupportModulePriv marmalade_priv;
 
+/* Touch is polled on the engine/render thread (SDL must be), but Android delivers
+ * onMotionEvent on the UI thread. The engine's touch handling expects UI-thread
+ * delivery, so we queue taps here and replay them via onMotionEvent FROM the OS/UI
+ * thread. (action is already mapped to the engine's TOUCH_* code by the producer.) */
+#define MARM_TOUCHQ 128
+static struct { int finger, action, x, y; } marm_touchq[MARM_TOUCHQ];
+static volatile int marm_touchq_head = 0, marm_touchq_tail = 0;
+static pthread_mutex_t marm_touchq_lock = PTHREAD_MUTEX_INITIALIZER;
+
 #define MARMALADE_LOADERTHREAD "com/ideaworks3d/marmalade/LoaderThread"
 #define MARMALADE_LOADERVIEW "com/ideaworks3d/marmalade/LoaderView"
 #define MARMALADE_LOADERKEYBOARD "com/ideaworks3d/marmalade/LoaderKeyboard"
@@ -915,10 +924,33 @@ marmalade_os_thread(void *arg)
     (*VM(marmalade_priv.global))->AttachCurrentThread(VM(marmalade_priv.global), &thread_env, NULL);
     unsigned long ticks = 0;
     for(;;) {
+        /* Replay queued taps via onMotionEvent on THIS (UI) thread. */
+        pthread_mutex_lock(&marm_touchq_lock);
+        while(marm_touchq_tail != marm_touchq_head) {
+            int fg = marm_touchq[marm_touchq_tail].finger, ac = marm_touchq[marm_touchq_tail].action;
+            int x = marm_touchq[marm_touchq_tail].x, y = marm_touchq[marm_touchq_tail].y;
+            marm_touchq_tail = (marm_touchq_tail + 1) % MARM_TOUCHQ;
+            pthread_mutex_unlock(&marm_touchq_lock);
+            if(marmalade_priv.loaderthread.onMotionEvent)
+                marmalade_priv.loaderthread.onMotionEvent(ENV(marmalade_priv.global),
+                        marmalade_priv.theloaderthread, fg, ac, x, y);
+            pthread_mutex_lock(&marm_touchq_lock);
+        }
+        pthread_mutex_unlock(&marm_touchq_lock);
+
         if(marmalade_priv.loaderthread.runOnOSTickNative)
             marmalade_priv.loaderthread.runOnOSTickNative(ENV(marmalade_priv.global),
                                                           marmalade_priv.theloaderthread);
-        if((++ticks % 2000) == 0) fprintf(stderr, "[MARM-OS] %lu ticks\n", ticks);
+        /* On Android the GL-surface lifecycle (AirplayView.surfaceChanged) calls
+         * resumeAppThreads once the surface is ready; without a SurfaceView the
+         * engine's app threads can be left SUSPENDED after a transition, so the
+         * menu logic stops running and taps that reach onMotionEvent are never
+         * processed. Periodically resume the app threads to release that wedge. */
+        if((++ticks) == 1500 && marmalade_priv.loaderthread.resumeAppThreads) {
+            fprintf(stderr, "[MARM-OS] resumeAppThreads ONCE (tick %lu)\n", ticks);
+            marmalade_priv.loaderthread.resumeAppThreads(ENV(marmalade_priv.global),
+                                                         marmalade_priv.theloaderthread);
+        }
         usleep(1000);
     }
     return NULL;
@@ -1000,35 +1032,23 @@ marmalade_init(struct SupportModule *self, int width, int height, const char *ho
 static void
 marmalade_input(struct SupportModule *self, int event, int x, int y, int finger)
 {
-   if(self->priv->loaderthread.onMotionEvent)
-   {
-       int action = 0;
-       if(ACTION_DOWN == event)
-       {
-           action = TOUCH_DOWN;
-           MODULE_DEBUG_PRINTF("onMotionEvent: down\n");
-       }
-       else if(ACTION_UP == event)
-       {
-           action = TOUCH_UP;
-           MODULE_DEBUG_PRINTF("onMotionEvent: up\n");
-       }
-       else if(ACTION_MOVE == event)
-       {
-           action = TOUCH_MOVE;
-           MODULE_DEBUG_PRINTF("onMotionEvent: move\n");
-       }
+   int action;
+   if(ACTION_DOWN == event)      action = TOUCH_DOWN;
+   else if(ACTION_UP == event)   action = TOUCH_UP;
+   else                          action = TOUCH_MOVE;
 
-       fprintf(stderr, "[MARMTOUCH] event=%d action=%d finger=%d x=%d y=%d\n",
-               event, action, finger, x, y);
-       self->priv->loaderthread.onMotionEvent(ENV_M,self->priv->theloaderthread,finger,action, x,y);
-
-       MODULE_DEBUG_PRINTF("onMotionEvent done.\n");
+   /* Polled on the engine/render thread; ENQUEUE so the OS/UI thread delivers it
+    * via onMotionEvent (matching Android's UI-thread touch delivery). */
+   pthread_mutex_lock(&marm_touchq_lock);
+   int next = (marm_touchq_head + 1) % MARM_TOUCHQ;
+   if(next != marm_touchq_tail) {
+       marm_touchq[marm_touchq_head].finger = finger;
+       marm_touchq[marm_touchq_head].action = action;
+       marm_touchq[marm_touchq_head].x = x;
+       marm_touchq[marm_touchq_head].y = y;
+       marm_touchq_head = next;
    }
-   else
-   {
-       fprintf(stderr, "[MARMTOUCH] DROPPED (no onMotionEvent) event=%d x=%d y=%d\n", event, x, y);
-   }
+   pthread_mutex_unlock(&marm_touchq_lock);
 }
 
 static void
