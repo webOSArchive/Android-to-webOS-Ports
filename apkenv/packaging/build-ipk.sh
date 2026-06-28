@@ -26,7 +26,7 @@
 set -e
 cd "$(dirname "$0")/.."          # -> apkenv/
 
-APPID=com.apkenv.wheresmywater
+APPID=${APPID:-com.apkenv.wheresmywater}
 STAGE=packaging/stage/$APPID
 LIBS=${1:-libs/webos}                    # FOSS bionic .so's (committed)
 APK=${APK:-packaging/wheresmywater.apk}  # game apk to bundle
@@ -38,8 +38,8 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/libs/webos" "$STAGE/android"
 
 cp apkenv                       "$STAGE/apkenv"
-cp packaging/webos/appinfo.json "$STAGE/appinfo.json"
-cp packaging/webos/README       "$STAGE/README"
+cp "${APPINFO:-packaging/webos/appinfo.json}" "$STAGE/appinfo.json"
+cp "${README:-packaging/webos/README}" "$STAGE/README"
 chmod +x "$STAGE/apkenv"
 cp devlibs/libEGL.so            "$STAGE/libs/webos/"   # harvested device lib
 
@@ -52,21 +52,31 @@ else
     echo "         The binary will fall back to APKENV_DEFAULT_APK on /media/internal."
 fi
 
-# Launcher icon: extract from the game apk at package time (not committed, as
-# it is copyrighted game art). Falls back to a committed icon if present.
-APK=${APK:-../android-candidates/wheresmywater_1.0.2.apk}
-if [ -f packaging/webos/icon.png ]; then
-    cp packaging/webos/icon.png "$STAGE/icon.png"
+# Launcher icon: extract the largest available app icon from the game apk at
+# package time (not committed — copyrighted game art). Tolerant of naming
+# (iconfree.png / ic_launcher.png) and never fatal.
+if [ -n "${ICON:-}" ] && [ -f "$ICON" ]; then
+    cp "$ICON" "$STAGE/icon.png"
 elif [ -f "$APK" ]; then
-    unzip -o -q "$APK" res/drawable-hdpi/iconfree.png -d packaging/.icontmp
-    if command -v convert >/dev/null 2>&1; then
-        convert packaging/.icontmp/res/drawable-hdpi/iconfree.png -resize 64x64\! "$STAGE/icon.png"
+    rm -rf packaging/.icontmp && mkdir -p packaging/.icontmp
+    for n in iconfree ic_launcher; do
+        for d in xhdpi hdpi mdpi drawable; do
+            unzip -o -q "$APK" "res/drawable-$d/$n.png" -d packaging/.icontmp 2>/dev/null || \
+            unzip -o -q "$APK" "res/$d/$n.png"          -d packaging/.icontmp 2>/dev/null || true
+        done
+    done
+    src=$(find packaging/.icontmp -name '*.png' 2>/dev/null | head -1)
+    if [ -n "$src" ]; then
+        if command -v convert >/dev/null 2>&1; then
+            convert "$src" -resize 64x64\! "$STAGE/icon.png"
+        else
+            cp "$src" "$STAGE/icon.png"
+        fi
+        echo "icon: $(basename "$src")"
     else
-        cp packaging/.icontmp/res/drawable-hdpi/iconfree.png "$STAGE/icon.png"
+        echo "WARNING: no app icon found in apk — launcher will show a placeholder"
     fi
     rm -rf packaging/.icontmp
-else
-    echo "WARNING: no icon.png and no apk to extract one from"
 fi
 
 if [ -d "$LIBS" ] && ls "$LIBS"/*.so >/dev/null 2>&1; then

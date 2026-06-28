@@ -123,6 +123,14 @@ wheresmywater2_init(struct SupportModule *self, int width, int height, const cha
     p->frame = 0;
     memset(p->fingers, 0, sizeof(p->fingers));
 
+    /* On-demand assets load via absolute paths ("/Water/Textures/..."); the
+     * libc asset-root redirect resolves them under $APKENV_ASSET_ROOT. When
+     * launched packaged (no env), default it. (TEST: points at the dir staged on
+     * /media/internal; a self-contained .ipk would bundle assets or read the apk
+     * directly.) */
+    if (!getenv("APKENV_ASSET_ROOT"))
+        setenv("APKENV_ASSET_ROOT", "/media/internal/wmw2root/assets", 1);
+
     const char *mt = getenv("APKENV_WMW2_MULTITOUCH");
     p->multitouch = (mt && mt[0] == '1') ? 1 : 0;
     const char *fa = getenv("APKENV_WMW2_ACCEL");

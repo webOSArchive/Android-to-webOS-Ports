@@ -488,6 +488,17 @@ apkenv_fbo_present(void)
      * attract-screen skeleton load) see exactly the state they left behind ---- */
     GLint s_vp[4];   functions.glGetIntegerv(GL_VIEWPORT, s_vp);
     GLint s_tex = 0; functions.glGetIntegerv(GL_TEXTURE_BINDING_2D, &s_tex);
+
+    /* Diagnostic: the engine's viewport + bound FBO at present time tells us
+     * whether it ended the frame on the full screen (768x1024) or stuck in a
+     * render-to-texture pass (small) — the "resized small" symptom. */
+    {
+        static int present_n = 0;
+        if ((present_n++ % 120) == 0)
+            fprintf(stderr, "[FBOPRES] #%d engine-vp=%d,%d,%d,%d bound_fbo=%d fbo_tex=%d\n",
+                    present_n, s_vp[0], s_vp[1], s_vp[2], s_vp[3],
+                    apkenv_bound_fbo, apkenv_fbo_tex);
+    }
     GLint s_atex = GL_TEXTURE0;  functions.glGetIntegerv(GL_ACTIVE_TEXTURE, &s_atex);
     GLint s_catex = GL_TEXTURE0; functions.glGetIntegerv(GL_CLIENT_ACTIVE_TEXTURE, &s_catex);
     GLint s_env = GL_MODULATE;   functions.glGetTexEnviv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, &s_env);
