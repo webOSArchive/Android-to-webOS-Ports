@@ -245,7 +245,36 @@ re-testing coordinate variants after the user had ruled them out. Trust the oper
 
 ---
 
-## 8. Status checklist (WMW worked example)
+## 8. Resource archives: unpack in advance, never stream in-place (bitten TWICE)
+
+**The recurring trap:** an NDK engine packs its game resources into one archive and
+reads them out at runtime. Pulling resources through the shim *at runtime is
+unstable* — the menu may limp along, but level/scene loads **spin or fail**. The cure
+is the same every time: **UNPACK the archive ahead of time** (host-side), push the
+unpacked tree to `/media/internal/<asset-root>`, and let the engine's `fopen`/`open`
+hit real files (via the §7 asset-root redirect). Do **not** assume the shim can
+stream out of the container.
+
+- **WMW (1st time):** in-apk/in-archive asset reads weren't stable → extracted the
+  asset tree on the host, pushed it, redirected reads. That's what made it playable.
+- **PvZ HD / Marmalade (2nd time):** game data is in `assets/PvZ.dz`, a **`DTRZ`**
+  archive (magic `DTRZ`, `u16` file count + null-terminated **filename table** +
+  offset/size table + **zlib-DEFLATE** blobs, stream magic `78 da`). `modules/marmalade.c`
+  literally carries `// TODO: extract files (implement dzip algorithm)` and never
+  unpacks it. Result: menu renders, but "start adventure" leaves the engine **spinning** —
+  `strace` shows it looping `open()` on an **empty** `…/.apkenv/<apk>/compiled/` dir
+  (open→close→retry), hunting resources that were never extracted. Touch, coords, and
+  GL were all fine; the blocker was purely the un-unpacked archive. Same disease, same
+  cure: unpack `.dz` → real files.
+
+**Triage rule (mirrored in `android-apk-port-triage`):** for every candidate, find
+**where the resources live**. If they're in a custom container (`.dz`/DTRZ, a packed
+`.obb`, an in-`.s3e` blob), **budget an unpack step up front** — it is not optional and
+it is not a runtime shim concern.
+
+---
+
+## 9. Status checklist (WMW worked example)
 
 | Area | Status |
 |---|---|
