@@ -12,9 +12,24 @@ driven directly through its JNI entry points; there is no Java VM.
 > → AudioTrack pump), and installs as a **one-tap webOS `.ipk`** that launches
 > from the launcher. End-to-end on real hardware.
 
-This repo is a **bring-your-own-apk toolkit**: it contains the porter, the
-build/packaging scripts, the methodology, and the docs — **no game code or
-copyrighted content**. You supply the `.apk` you own.
+**This is a toolkit and methodology, not a complete solution.** It is **not an
+emulator** and not a one-click converter. It gives you the scaffolding — the
+apkenv shim, the webOS backend, the build/packaging pipeline — and one worked
+example to learn from. Porting a game is **hands-on work**: every new title needs
+its own per-game module and, usually, engine-specific reverse-engineering and
+fixes.
+
+**Every Android app is different, and not all can be ported this way.** The
+approach fits **native NDK games** whose logic is in C/C++ and that call a small,
+stubbable set of JNI entry points. Apps that are mostly **Java/Dalvik**, lean on
+Android frameworks (WebView, Play Services, complex UI, heavy audio/media,
+DRM/networking), depend on native features webOS lacks, or ship only `arm64`/x86
+are poor fits — some are infeasible. **Triage before you invest** (see
+`CLAUDE.md`); expect that some games simply won't work.
+
+It is also a **bring-your-own-apk toolkit**: it contains the porter, scripts,
+methodology, and docs — **no game code or copyrighted content**. You supply the
+`.apk` you own.
 
 ---
 
@@ -40,29 +55,6 @@ is also ARM Linux with an OpenGL ES stack — so instead of emulating Android, w
 The deeper strategy (treating apkenv as a faithful Gingerbread *contract host*,
 not a per-game puppet) is in [`android-runtime-architecture.md`](android-runtime-architecture.md);
 the hands-on field guide is [`android-port-shim.md`](android-port-shim.md).
-
----
-
-## Repo layout
-
-```
-README.md                      ← you are here
-CLAUDE.md                      ← workspace notes + candidate-game triage
-android-port-shim.md           ← the field guide (start here to port)
-android-runtime-architecture.md← the strategy / why
-plan/                          ← staged work orders (Stages 0–6) + review checklists
-android-candidates/            ← drop your donor .apk here (apks git-ignored)
-apkenv/                        ← the porter (forked & extended from thp/apkenv)
-  apkenv.c, linker/, jni/      ← bionic linker-as-lib + fake-JNI
-  compat/, glshim/             ← GLES wrappers + Khronos headers
-  audio/                       ← AudioTrack sink + FMOD device pump (Stage 4)
-  platform/webos.c             ← the webOS SDL/PDL backend
-  modules/wheresmywater.c      ← the worked-example per-game module
-  libs/webos/                  ← FOSS bionic runtime payload (committed)
-  build-webos.sh               ← the two-toolchain webOS cross-build
-  packaging/                   ← .ipk packaging (build-ipk.sh, appinfo, README)
-  BUILD-STATE.md               ← detailed build/runtime state + hard-won gotchas
-```
 
 ---
 
