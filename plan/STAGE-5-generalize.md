@@ -5,7 +5,7 @@ every subsystem default-on, strip the debug scaffolding, and bring up a **second
 per-game behavior hacks** — only facts in its module.
 **Architecture ref:** `../android-runtime-architecture.md` §2 (design rules), Phase 5.
 **Depends on:** Stages 2, 3, 4.
-**Status:** ☐ Not started
+**Status:** ◐ In progress — 2nd game (WMW2) triaged, reverse-engineered, module written + compiling in the same binary (self-selecting). On-device bring-up pending (see §8).
 
 ## 1. The bar (what "general" means here)
 
@@ -64,3 +64,65 @@ candidates (FlappyBird=AndEngine/Java, etc.).
   stage, and they must be general.
 
 ## 8. Work log
+
+### 2026-06-28 — candidate triage + WMW2 reverse-engineering + module (offline; device untouched)
+
+Done autonomously without the device (the WMW1 `.ipk` install was left pristine
+for the user's pending test). All static RE; on-device bring-up is the next step.
+
+**Candidate triage (all 7 apks).** native engine + GL + audio + JNI surface:
+
+| apk | native engine | GL | audio | JNI | verdict |
+|---|---|---|---|---|---|
+| wheresmywater2 | libwalaber (Walaber) | **GLES1** | **FMOD** | 109 static `Bridge.*` | ✅ **picked** |
+| bejeweledblitz | libBejBlitz (SexyApp) | GLES2+1 | **OpenSL** | RegisterNatives (hidden) | new sink + dyn-JNI; later |
+| fruitninja | libmortargame (Mortar) | GLES2 | FMOD+OpenSL | 51 static + ad-JNI, 5MB dex | GLES2 + ads; later |
+| cut-the-rope | libctr-jni | — | — | 7MB **dex** | Dalvik-heavy; poor fit |
+| templerun2 | libunity+**libmono** | — | — | C# assemblies (Mono JIT) | hard; needs Mono |
+| flappybird | libandengine (11KB stub) | — | — | all **Java/Dalvik** | not NDK; skip |
+
+**Why WMW2:** it is **GLES1 + FMOD** — exactly the subsystems already built — so
+porting it *proves they are game-independent* (the Stage-5 thesis), while still
+being real RE: Disney replaced WMW1's ~14 `WMWRenderer.*` methods with a new
+**"GameLib Bridge"** (109 static exports under `com.disney.GameLib.Bridge.*`).
+
+**What reused verbatim (general code, no new branches):**
+- **FMOD AudioTrack pump** (`audio/fmod_pump.c`) — WMW2 ships the same
+  `org.fmod.FMODAudioDevice` glue.
+- **GLES1 render-to-portrait-FBO** (Stage 3) — same engine, same path.
+- **Touch interface** — WMW2's `jniTouch{Began,Ended}(I[F[F[I)` /
+  `jniTouchMoved(I[F[F[F[F[I)` are byte-identical to WMW1's Walaber touch model
+  (normalized 0..1 coords, count, ids), so the coord transform + array build copy over.
+
+**New per-game module** `apkenv/modules/wheresmywater2.c` (facts: the bridge
+entrypoints + init order). Both modules now compile into ONE binary and
+**self-select** via `try_init` (each resolves only its own game's symbols) —
+demonstrating the multi-game-host shape. Builds clean (GLIBC_2.4).
+
+Bridge map (readelf + baksmali): master init
+`WalaberNativeChassis.jniWalaberChassisStartup(String,String,dirPath,int,lang,
+country,String,String,String)`; per-bridge `jniBridgeInit()`; renderer
+`jniRenderInit(w,h,xdpi,ydpi)` → `jniRenderAreaCreated/Resized` → per-frame
+`jniRenderDrawPreDraw()`+`jniRenderDrawFrame()`; `jniTouch*`; `jniAccelerometerChanged`;
+lifecycle `jniWalaberChassisAppPause/Resume` + `jniAppLostFocusPleaseShowPauseMenu`.
+
+**On-device bring-up checklist (the `[BRINGUP]` unknowns — needs a device):**
+1. **`jniWalaberChassisStartup` 9 args** — exact mapping of the path/id strings +
+   the int config (the module passes apk/home/locale guesses; `d.smali` shows the
+   shapes but the obfuscated `As`/`At` getters hide exact values).
+2. **`jniBridgeInit` order / which bridges are mandatory** — current set is a guess
+   (chassis, render, touch, sensor, appfocus, audio, gameflow).
+3. **Instance-method `thiz`** — these natives are `private native` (instance), not
+   static like WMW1; the engine may read fields/callbacks off the bridge object.
+   The module passes the `GLOBAL_M` dummy (worked for WMW1) — verify it suffices.
+4. **`std::string(NULL)` boot bug** — `libwalaber` contains the same
+   `_S_construct null not valid` throw class as WMW1; if it crashes on boot, find
+   + bake the 1-insn patch (as for WMW1).
+5. **Orientation** — assumed portrait (FBO on); confirm WMW2 is portrait.
+6. **`jniRenderInit` dpi** — passing 132; tune if UI scale is wrong.
+7. In-level touch may need the **frame-paced delivery** + thief handling WMW1
+   needed (same engine) — add only if the in-level carve is dead, and keep it general.
+
+Next session (with device): bundle the WMW2 apk under `android/`, build the
+`.ipk`, install, launch, read `/media/internal/apkenv-*.log`, and walk the
+checklist. Do NOT disturb the WMW1 install until its test is done.
