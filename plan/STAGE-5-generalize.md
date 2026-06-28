@@ -126,3 +126,119 @@ lifecycle `jniWalaberChassisAppPause/Resume` + `jniAppLostFocusPleaseShowPauseMe
 Next session (with device): bundle the WMW2 apk under `android/`, build the
 `.ipk`, install, launch, read `/media/internal/apkenv-*.log`, and walk the
 checklist. Do NOT disturb the WMW1 install until its test is done.
+
+### 2026-06-28 (part 2) — WMW2 ON-DEVICE bring-up (got to the level; 2 general bugs fixed)
+
+Ran WMW2 via a `/var/apkenv2` harness (binary + reused WMW1 libs; apk + extracted
+assets on /media/internal). It now **boots, menu is interactive, audio plays
+(FMOD pump reused verbatim), assets load, and it ENTERS the level (`Screen_Main`).**
+Three fixes got it there — two are GENERAL toolkit wins:
+
+1. **`GetStringUTFChars` use-after-free (general, committed).** It returned the
+   `dummy_jstring`'s own `data` buffer; `ReleaseStringUTFChars` `free()`s it -> any
+   string Get/Released more than once becomes freed memory. WMW2 hit it on its
+   reused path args (garbage DB names + double-free). Fixed: return a `strdup`.
+2. **Asset-root `fopen`/`open` redirect restored (general, committed).** Lost in
+   the source reconstruction. On-demand absolute-path loads (`/Water/Textures/...`)
+   now retry under `$APKENV_ASSET_ROOT`. The menu loads via the engine's ZipArchive;
+   only the level's on-demand loads needed this. (Full WMW1 gameplay needs it too.)
+3. **WMW2 startup args** mapped from the deobfuscated `as` storage class
+   (sourceDir/dataDir/cacheDir = writable dirs); `jniRenderInit` floats = physical
+   size in **mm**, not dpi.
+
+**Open blockers (deep / iterative — the genuinely game-specific part):**
+- **Level renders at a 0.75 viewport** — `glViewport(0,0,576,768)` vs the full
+  `768x1024` FBO, anchored bottom-left. NOT from the physical-mm arg (changing it
+  had no effect). Likely an asset-tier / logical-resolution choice in the level
+  scene (needs RE of how libwalaber picks the level viewport, or the HD-vs-SD tier).
+- **Level-load OOM.** webOS leaves only ~120MB free at rest; apkenv menu -> ~42MB
+  free; loading the level's HD textures exceeds that -> silent OOM death (no glibc
+  signature). Likely needs the **SD asset tier** (smaller textures) — which the
+  viewport/dpi/tier selection probably also controls — and/or a real packaged
+  `.ipk` launch (webOS frees memory for a foreground card, unlike the /var harness).
+
+Takeaway: the toolkit generalized cleanly (engine bridge, FMOD audio, GLES1 FBO,
+touch all reused; the 2 bugs found are now fixed for everyone). WMW2 to *playable*
+is a multi-step effort like WMW1 was — viewport-tier RE + memory budget are next.
+Device left clean; WMW1 install untouched. Harness (`/var/apkenv2`,
+`/media/internal/wmw2root` + apk) left in place for a fast resume.
+
+### 2026-06-28 (part 3) — WMW2 level RENDER + LOAD diagnosis. Resume point.
+
+More on-device iteration. Net: **present scaling fixed; level-scene LOAD is the
+open blocker, and it is NOT memory.**
+
+Fixed/learned:
+- **Present-region fix (committed, general).** `[FBOPRES]` diagnostic proved the
+  engine renders the level into a **576x768 sub-viewport** of the 768x1024 FBO
+  (`bound_fbo=0`, bottom-left; both 3:4 so a clean uniform 0.75 scale). The menu
+  uses the full 768x1024. `apkenv_fbo_present` now samples only the engine's last
+  viewport region (`[vp]/[fbo]`) scaled to fill, instead of the whole FBO — so a
+  sub-viewport render fills the screen. WMW1 (full-FBO) unaffected. The
+  physical-mm `jniRenderInit` arg does NOT change the 576x768 (engine-internal).
+- **NOT memory.** At the stuck state: **412MB free, apkenv RSS 52MB**, zero
+  readFails / Memory Warnings. The earlier "OOM" theory is retired for this path.
+- **The blocker:** tapping play flips the viewport to 576x768 (`[SDLEV] type=5/6`
+  touch registered) but **no level scene loads** — no `Screen_*` enter, no asset
+  loads, just black. **Inconsistent run-to-run:** the *packaged install-dir*
+  launch once reached `[Screen_Main] enter` + loading screen + "ready to start";
+  the `/var` launch stalls at the 576x768 black. Same apk/data-dir/assets.
+
+### Level-load RE plan (next)
+The inconsistency = the key thread. Hypotheses to test, in order:
+1. **Async/threaded scene load not driven.** WMW2 spawns worker threads
+   (`pthread_create` seen); the level scene may load on a thread / over frames
+   gated on a signal our single-thread puppeteer doesn't satisfy (cf. WMW1's
+   async widget-load). Instrument the bridge scene-transition + any load-complete
+   callback; check whether a loader thread runs and blocks.
+2. **Tap target / navigation.** "Play" may route to a transition screen distinct
+   from tapping a level node; confirm via the engine's screen-stack/scene logs
+   (hook `Screen*`/`ScreenManager` transition fns in libwalaber, as for WMW1).
+3. **Lifecycle gate.** The packaged run differs from `/var` only in launch path;
+   check whether a lifecycle/focus event (onResume/regainedFocus equiv) or an
+   AppEvents bridge init the packaged path sends and `/var` doesn't is what lets
+   the scene proceed.
+Tooling: WMW2's libwalaber is NOT stripped (full Bridge symbols) — inline-hook
+the scene-enter / level-load entrypoints + log, same harness as WMW1
+(`modules/wheresmywater.c` wmw_install_hook). Then the present fix makes it visible.
+
+Wins locked in regardless: toolkit generalizes (bridge/FMOD/FBO/touch reused);
+2 general bugs fixed (JNI GetStringUTFChars UAF; asset-root redirect). Device
+harness (`/var/apkenv2` + `/media/internal/wmw2root`) + the WMW2 `.ipk`
+(com.apkenv.wheresmywater2) left in place.
+
+### 2026-06-28 (part 4) — WMW2 level-load ROOT CAUSE FOUND: multi-threaded GL.
+
+RE'd the level-load stall to its root via on-device thread instrumentation:
+
+- The level load is **async + worker-threaded** (`World::loadLevel(file, Callback)`
+  → `loadLevelMetaFile` → `…Callback` → `loadLevelPart2` → `loadLevelDone`).
+- Added `[PTHREAD]` lifecycle logging: on tap, a loader thread
+  (`routine=0x2c054dac`) **starts and never ends** (hung).
+- Thread states at the stall (`/proc/<pid>/task/*/wchan`): **main thread =
+  `futex_wait`** (blocked, frames stop), a **worker = `kgsl_yamato_waittimestamp`**
+  (Adreno GPU fence that never resolves), `/dev/kgsl-3d0` open on a non-main thread.
+
+**Conclusion: WMW2 streams/uploads level textures on a BACKGROUND GL THREAD.**
+apkenv has a **single GL context** (SDL/PDL, main thread) — the worker's GL can't
+proceed, its GPU fence hangs, and the main thread blocks waiting on the worker →
+deadlock. WMW1 loaded single-threaded, so it never hit this. This is the real,
+fundamental blocker — **not memory** (412MB free) and **not** the 576x768 present
+(fixed). It also explains the run-to-run inconsistency (threading race).
+
+**Fix options (all major architecture, pick later):**
+1. **Marshal worker-thread GL to the main thread** — intercept GL from any non-GL
+   thread, queue it, execute on the main thread's drawFrame, block the caller for
+   results. Single-context-safe; the most viable on webOS (which forbids raw EGL).
+   Big: must cover the GL surface the loader uses + return-value sync.
+2. **Shared EGL context** for the worker (eglCreateContext sharing the SDL context,
+   eglMakeCurrent on the worker). Standard multi-threaded-GL, but webOS owns the
+   context via SDL/PDL and warns against raw EGL (flicker) — risky.
+3. **Force synchronous load** — if libwalaber has a sync-load path/flag, drive
+   that and skip the worker entirely. Cheapest IF such a path exists (RE needed).
+
+This is a clean stopping point: WMW2 is **generalization-proven** (bridge/audio/
+FBO/touch reused; 2 general bugs fixed; boots/menu/audio/assets/enters-level) and
+its remaining blocker is precisely diagnosed (multi-threaded GL), which is a
+focused engineering project (GL threading), not open-ended debugging. Diagnostics
+(`[PTHREAD]`, `[FBOPRES]`) left in for the resume.
