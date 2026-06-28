@@ -132,6 +132,21 @@ pthread_rwlock_t* apkenv_alloc_init_rwlock(void)
  *
  * */
 
+/* Diagnostic wrapper: log the engine thread's lifecycle so we can see whether a
+ * worker thread (e.g. WMW2's level loader) runs to completion, hangs, or dies. */
+struct apkenv_thread_log { void *(*fn)(void*); void *arg; };
+static void *apkenv_thread_trampoline(void *p)
+{
+    struct apkenv_thread_log *t = p;
+    void *(*fn)(void*) = t->fn; void *arg = t->arg; free(t);
+    fprintf(stderr, "[PTHREAD] >>> start tid=%lu routine=%p\n",
+            (unsigned long)pthread_self(), (void*)fn);
+    void *r = fn(arg);
+    fprintf(stderr, "[PTHREAD] <<< end   tid=%lu routine=%p ret=%p\n",
+            (unsigned long)pthread_self(), (void*)fn, r);
+    return r;
+}
+
 int apkenv_my_pthread_create(pthread_t *thread, const pthread_attr_t *__attr,
                              void *(*start_routine)(void*), void *arg)
 {
@@ -140,7 +155,9 @@ int apkenv_my_pthread_create(pthread_t *thread, const pthread_attr_t *__attr,
     if (__attr != NULL)
         realattr = (pthread_attr_t *) *(unsigned int *) __attr;
     printf("pthread_create(thread=%p, attr=%p, start_routine=%p, arg=%p)\n",thread, __attr, start_routine, arg);
-    return pthread_create(thread, realattr, start_routine, arg);
+    struct apkenv_thread_log *t = malloc(sizeof(*t));
+    t->fn = start_routine; t->arg = arg;
+    return pthread_create(thread, realattr, apkenv_thread_trampoline, t);
 }
 
 /*
