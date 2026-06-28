@@ -652,14 +652,6 @@ marmalade_CallVoidMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
          * app on any card switch / screen blank mid-test. Just keep running. */
         marmalade_priv.global->platform->input_update(marmalade_priv.module);
 
-        /* Marmalade has a 2-thread model: the engine thread posts work (GL/view
-         * ops, deploy steps) to the OS/UI thread and blocks waiting for it. We run
-         * the engine on one thread, so we MUST drain that OS-thread queue here by
-         * calling runOnOSTickNative — otherwise the engine queues work, waits
-         * forever (a nanosleep poll loop), and the game never finishes loading. */
-        if(marmalade_priv.loaderthread.runOnOSTickNative)
-            marmalade_priv.loaderthread.runOnOSTickNative(ENV(marmalade_priv.global),marmalade_priv.theloaderthread);
-
         if(marmalade_priv.accel_started) {
             float x, y, z;
             apkenv_accelerometer_get(&x,&y,&z);
@@ -682,10 +674,6 @@ marmalade_CallVoidMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
          * render, and taps during idle were never delivered. Pump SDL here too
          * so input reaches the engine even when it isn't drawing a new frame. */
         marmalade_priv.global->platform->input_update(marmalade_priv.module);
-        /* Also drain the OS-thread work queue while the engine yields/waits, so a
-         * blocked engine-thread handoff (e.g. during the game load) can complete. */
-        if(marmalade_priv.loaderthread.runOnOSTickNative)
-            marmalade_priv.loaderthread.runOnOSTickNative(ENV(marmalade_priv.global),marmalade_priv.theloaderthread);
     }
     else if(method_is(deviceUnYield))
     {
@@ -914,6 +902,28 @@ marmalade_try_init(struct SupportModule *self)
     return (self->priv->JNI_OnLoad != NULL) && marmalade_priv.marmalade_found;
 }
 
+/* Marmalade's OS/UI thread. The engine runs on its own thread (runNative) and
+ * hands GL/view/load work to the OS thread via an internal queue, then BLOCKS on
+ * a semaphore waiting for that thread to run it and signal back (see the spin
+ * disassembled at libpvz off 0x26568). With everything on one thread nothing ever
+ * services the queue, so the engine spins on deviceYield forever. This dedicated
+ * thread continuously drains runOnOSTickNative so those handoffs complete. */
+static void *
+marmalade_os_thread(void *arg)
+{
+    JNIEnv *thread_env;
+    (*VM(marmalade_priv.global))->AttachCurrentThread(VM(marmalade_priv.global), &thread_env, NULL);
+    unsigned long ticks = 0;
+    for(;;) {
+        if(marmalade_priv.loaderthread.runOnOSTickNative)
+            marmalade_priv.loaderthread.runOnOSTickNative(ENV(marmalade_priv.global),
+                                                          marmalade_priv.theloaderthread);
+        if((++ticks % 2000) == 0) fprintf(stderr, "[MARM-OS] %lu ticks\n", ticks);
+        usleep(1000);
+    }
+    return NULL;
+}
+
 static void
 marmalade_init(struct SupportModule *self, int width, int height, const char *home)
 {
@@ -962,6 +972,16 @@ marmalade_init(struct SupportModule *self, int width, int height, const char *ho
     self->priv->loaderthread.resumeAppThreads(ENV_M,self->priv->theloaderthread);
     MODULE_DEBUG_PRINTF("resumeAppThreads done.\n");
     */
+
+    /* Start the OS/UI thread BEFORE handing control to the engine's blocking
+     * runNative, so the engine's first OS-thread handoff has someone to service it. */
+    {
+        pthread_t os_tid;
+        if(pthread_create(&os_tid, NULL, marmalade_os_thread, NULL) == 0)
+            fprintf(stderr, "[MARM] OS/UI thread started\n");
+        else
+            fprintf(stderr, "[MARM] OS/UI thread FAILED to start\n");
+    }
 
     MODULE_DEBUG_PRINTF("runNative\n");
     self->priv->loaderthread.runNative(ENV_M,self->priv->theloaderthread,
