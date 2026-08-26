@@ -80,3 +80,4 @@ first after the harness.
     `fmodProcess(Ljava/nio/ByteBuffer;)I` + `fmodGetInfo(I)I`.
   - Stability patch (already baked into the apk): 1-insn `std::string(NULL)` fix @ file-offset
     `0x3f891c`.
+- `PVZ-HD-menu-freeze.md` — PvZ HD (Marmalade/Airplay): contract-review root cause of the menu freeze, audio, letterbox, packaging. Method distilled in `../PORTING-PLAYBOOK.md`.

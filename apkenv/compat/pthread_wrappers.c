@@ -58,6 +58,80 @@
 /* Debug */
 #define LOGD(message, ...) WRAPPERS_DEBUG_PRINTF(message "\n", ##__VA_ARGS__)
 
+/* --- blocking-call watchdog (APKENV_PTHREAD_WATCH=1) ------------------------
+ * Diagnoses multi-threaded-load deadlocks: each wrapped blocking call records
+ * (tid, kind, caller, obj) in a slot; a watchdog thread logs any call still
+ * blocking after ~2s — pinpointing the wedged thread, the CALLER (lib+offset,
+ * via __builtin_return_address — map against /proc/<pid>/maps), and the
+ * lock/cond object. Lock-free: CAS slot-claim + a watchdog tick counter. */
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#define PW_SLOTS 128
+static struct {
+    volatile int active;   /* 0 free / 1 in-use */
+    volatile int logged;   /* already reported stuck */
+    unsigned long seq;     /* watchdog tick at entry */
+    unsigned long tid;
+    const char *kind;
+    void *caller;
+    void *obj;
+} pw[PW_SLOTS];
+static volatile unsigned long pw_tick = 0;
+static int pw_on = -1;
+static __thread int pw_slot = -1;
+
+static void *pw_watchdog(void *a)
+{
+    (void)a;
+    for (;;) {
+        usleep(200000);                 /* 200ms */
+        unsigned long now = ++pw_tick;
+        int i;
+        for (i = 0; i < PW_SLOTS; i++) {
+            if (pw[i].active && !pw[i].logged && (now - pw[i].seq) >= 10) { /* ~2s */
+                pw[i].logged = 1;
+                fprintf(stderr, "[PWATCH] STUCK tid=%lx %-10s caller=%p obj=%p (~%lus)\n",
+                        pw[i].tid, pw[i].kind, pw[i].caller, pw[i].obj,
+                        (now - pw[i].seq) / 5);
+            }
+        }
+    }
+    return NULL;
+}
+static int pw_enabled(void)
+{
+    if (pw_on < 0) {
+        const char *e = getenv("APKENV_PTHREAD_WATCH");
+        pw_on = (e && e[0] == '1') ? 1 : 0;
+        if (pw_on) {
+            pthread_t t;
+            pthread_create(&t, NULL, pw_watchdog, NULL);
+            fprintf(stderr, "[PWATCH] enabled\n");
+        }
+    }
+    return pw_on;
+}
+static void pw_enter(const char *kind, void *obj, void *caller)
+{
+    int i;
+    if (!pw_enabled()) return;
+    for (i = 0; i < PW_SLOTS; i++) {
+        if (__sync_bool_compare_and_swap(&pw[i].active, 0, 1)) {
+            pw[i].kind = kind; pw[i].obj = obj; pw[i].caller = caller;
+            pw[i].tid = (unsigned long)pthread_self(); pw[i].logged = 0;
+            pw[i].seq = pw_tick;
+            pw_slot = i;
+            return;
+        }
+    }
+    pw_slot = -1;
+}
+static void pw_exit(void)
+{
+    if (pw_slot >= 0) { pw[pw_slot].active = 0; pw_slot = -1; }
+}
+
 #include "hooks_shm.h"
 
 /* Helpers */
@@ -397,7 +471,10 @@ int apkenv_my_pthread_mutex_lock(pthread_mutex_t *__mutex)
         *((unsigned int *)__mutex) = (unsigned int) realmutex;
     }
 
-    return pthread_mutex_lock(realmutex);
+    pw_enter("mutex_lock", realmutex, __builtin_return_address(0));
+    int _r = pthread_mutex_lock(realmutex);
+    pw_exit();
+    return _r;
 }
 
 int apkenv_my_pthread_mutex_trylock(pthread_mutex_t *__mutex)
@@ -614,7 +691,18 @@ int apkenv_my_pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex)
         *((unsigned int *) mutex) = (unsigned int) realmutex;
     }
 
-    return pthread_cond_wait(realcond, realmutex);
+    pw_enter("cond_wait", realcond, __builtin_return_address(0));
+    int _r = pthread_cond_wait(realcond, realmutex);
+    pw_exit();
+    return _r;
+}
+
+int apkenv_my_pthread_join(pthread_t thid, void **ret_val)
+{
+    pw_enter("join", (void *)thid, __builtin_return_address(0));
+    int _r = pthread_join(thid, ret_val);
+    pw_exit();
+    return _r;
 }
 
 int apkenv_my_pthread_cond_timedwait(pthread_cond_t *cond,

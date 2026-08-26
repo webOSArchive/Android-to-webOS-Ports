@@ -171,6 +171,14 @@ apkenv_mixer_volume_music(struct MixerMusic *music, float volume)
 }
 
 void
+apkenv_mixer_set_postmix(void (*cb)(void *udata, void *stream, int len), void *udata)
+{
+    if (g_mixer && g_mixer->set_postmix) {
+        g_mixer->set_postmix(g_mixer, cb, udata);
+    }
+}
+
+void
 apkenv_mixer_volume_sound(struct MixerSound *sound, float volume)
 {
     if (g_mixer) {

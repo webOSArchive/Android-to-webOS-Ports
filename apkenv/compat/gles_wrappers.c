@@ -1255,6 +1255,10 @@ void
 my_glScissor(GLint x, GLint y, GLsizei width, GLsizei height)
 {
     WRAPPERS_DEBUG_PRINTF("glScissor(x=%d, y=%d, width=%d, height=%d)\n", x, y, width, height);
+    if(apkenv_bound_fbo == 0) {
+        x += global_module_hacks.viewport_offset_x;
+        y += global_module_hacks.viewport_offset_y;
+    }
     if(apkenv_bound_fbo == 0 && global.platform->get_orientation() != global_module_hacks.current_orientation) {
         WRAPPERS_DEBUG_PRINTF("glScissor rotation hack\n");
         functions.glScissor(y, x, height, width);
@@ -1430,6 +1434,10 @@ my_glViewport(GLint x, GLint y, GLsizei width, GLsizei height)
             fprintf(stderr, "[FBO] engine glViewport(%d,%d,%d,%d) bound_fbo=%d\n",
                     x, y, width, height, apkenv_bound_fbo);
     }
+    if(apkenv_bound_fbo == 0) {
+        x += global_module_hacks.viewport_offset_x;
+        y += global_module_hacks.viewport_offset_y;
+    }
     if(global_module_hacks.gles_viewport_hack && apkenv_bound_fbo == 0) {
         WRAPPERS_DEBUG_PRINTF("glViewport rotation hack\n");
         if(global.platform->get_orientation() != global_module_hacks.current_orientation) {
@@ -1442,6 +1450,18 @@ my_glViewport(GLint x, GLint y, GLsizei width, GLsizei height)
     else {
         functions.glViewport(x, y, width, height);
     }
+}
+void
+apkenv_gles_clear_screen(void)
+{
+    GLfloat cc[4];
+    GLboolean sc = functions.glIsEnabled(GL_SCISSOR_TEST);
+    functions.glGetFloatv(GL_COLOR_CLEAR_VALUE, cc);
+    if (sc) functions.glDisable(GL_SCISSOR_TEST);
+    functions.glClearColor(0, 0, 0, 1);
+    functions.glClear(GL_COLOR_BUFFER_BIT);
+    functions.glClearColor(cc[0], cc[1], cc[2], cc[3]);
+    if (sc) functions.glEnable(GL_SCISSOR_TEST);
 }
 void
 my_glPointSizePointerOES(GLenum type, GLsizei stride, const GLvoid *pointer)

@@ -69,6 +69,10 @@ struct ModuleHacks {
      * those per-call hooks stay disabled. */
     int render_to_fbo;
     int fbo_w, fbo_h;
+    /* Letterbox: the engine believes the surface is smaller than the screen;
+     * every glViewport/glScissor on the real framebuffer is shifted by this
+     * offset so the image sits centered, and the module clears the bars. */
+    int viewport_offset_x, viewport_offset_y;
 };
 
 struct SupportModule {

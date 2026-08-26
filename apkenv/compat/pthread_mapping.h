@@ -2,7 +2,7 @@
 {"pthread_create", apkenv_my_pthread_create},
 {"pthread_kill", pthread_kill},
 {"pthread_exit", pthread_exit},
-{"pthread_join", pthread_join},
+{"pthread_join", apkenv_my_pthread_join},
 {"pthread_detach", pthread_detach},
 {"pthread_self", pthread_self},
 {"pthread_equal", pthread_equal},

@@ -322,3 +322,61 @@ menu stably (state S, 381MB, not spinning). **Stability = memory headroom**: the
 ~269MB engine pool + apkenv needs a fresh-ish device; `/var/apkenv2/play-pvz.sh`
 frees background-service RAM and launches. OPEN: user touch test pending (does the
 UI-thread touch queue make the menu respond).
+
+### 2026-06-29 — PvZ HD: TOUCH CONFIRMED WORKING; menu freeze = cooperative s3e-fibre stall (root cause still open).
+Deep on-device RE session. Headline: **the menu DOES respond to touch** — the
+loading "tap to continue" advances on tap (user-confirmed), 16 DOWN+16 UP reached
+the engine; pt7's open question is answered ✅. The "frozen menu" is NOT a touch
+bug — it's an **engine deadlock** that makes the menu look unresponsive.
+
+**Eliminated, in order (each proven on-device — do not re-chase):**
+1. App-thread suspend/resume — RE'd `suspendAppThreads`(0x2374c, self-park gate)
+   /`resumeAppThreads`(0x23708, a near-NO-OP: clears a status byte, never signals).
+   pt5–pt7's resume approach could never have worked. Live read: suspend count=1,
+   `stat`=0 → nobody parked in the gate. NOT it.
+2. pthread worker threads — libpvz creates ZERO via pthread_create (logged); the
+   `futex_wait` thread is a device-lib thread, incidental. Added a PWATCH
+   blocking-call watchdog (compat/pthread_wrappers.c) → caught nothing stuck.
+3. Missing resources — strace at the wedge: zero open()/stat(), no ENOENT. The
+   menu music (`music/crazydave.mp3`) is genuinely absent but the loader isn't
+   hunting it; not the freeze.
+4. **It's a cooperative s3e-FIBRE stall.** Stack-scanned the engine thread at the
+   wedge → the spin is the s3e fibre scheduler (0x37008: `while(fibre.state==1)
+   s3eFibreSwitch`). Inspected the fibre table (libpvz+0x74b74) → the loader fibre
+   finished loading (file-task count `[loader_mgr+0x20]`==0) but stays runnable,
+   idle-yielding; the main-loop state machine (state var `[r6+0x44]`=5, set in
+   loader-tick fn 0x1f8e8) never transitions to render → engine pumps the idle
+   loader forever.
+
+**Two fix hypotheses TRIED, both FAILED (runtime libpvz patches):**
+- **Free-RAM check** (gate fn 0x1f690 reads `MemRequired`/`SkipFreeRamCheck`,
+  compares `s3eDeviceGetInt(free) < MemRequired`): forced the branch to always
+  pass → NO change. Not the blocker.
+- **Gate-bypass** (force 0x1f690→return 0): SEGFAULT in cfree at boot — 0x1f690
+  does real per-tick allocation/load work, can't be skipped. Inconclusive.
+
+**STATE: root cause still OPEN.** Next steps are DIAGNOSTIC, not speculative
+patches. Fresh-start plan (full detail + all addresses in the `wrapper-spike-progress`
+memory, top entry "FRESH-START PLAN"): (1) read the loader fibre's TRUE resume PC
+(saved lr in the s3eFibreSwitch pushed-reg block at the loader fibre's struct[0]
+SP) → names the exact wait; (2) instrument the state machine `[r6+0x44]`; (3) treat
+as a possible timing race (freeze frame varied 186→40573). Likely a TIMING RACE in
+the fibre handoff, not a deterministic gate.
+
+**Toolkit:** all diagnostics added this session live in `modules/marmalade.c`
+(`APKENV_MARM_{FIBREDUMP,STACKSCAN,COOPYIELD,RAMPATCH,GATEBYPASS,TICK}`) +
+`compat/pthread_wrappers.*` (PWATCH) — env-gated, UNCOMMITTED, `play-pvz.sh`=clean.
+Device left clean; reboot for ~500MB before launching (OOM-dies below ~440MB).
+
+### 2026-08-26 — PvZ HD: STEP BACK. Freeze root-caused to a HOST-CONTRACT gap (s3eOSReadString), not the engine.
+Systematic review instead of patch-and-test: decompiled the apk's Java host (`AirplayThread`/
+`AirplayView`) = the contract `modules/marmalade.c` must satisfy, and diffed it against what the
+module implements. Key reframe: `libpvz.so` is only the Airplay RUNTIME; the game is
+`assets/PvZ.s3e` (LZMA, Sexy framework) — every prior libpvz gate/fibre patch targeted the wrong
+binary. The freeze = PvZ's first-run "Enter your name" prompt: engine calls Java
+`getInputString`, then spins `deviceYield(20)` until native `setInputText` fills its result
+slot (libpvz 0x25a9c..0x25b2c); the module never answered. Built: the answer (default name via
+`APKENV_MARM_READSTRING`), an always-on unhandled-call-out tracer (`[MARM-JNI]`), and the
+Airplay `audioPlay(String,int)` signature fix. Full analysis, staged theories B–F and the test
+protocol: `plan/PVZ-HD-menu-freeze.md`. Device was unreachable; build md5 7379f0d0 awaits test.
+

@@ -596,6 +596,57 @@ get_config_int(char *name, int fallback)
 void *
 apkenv_base_of_stack;
 
+/* --- packaged data seeding ---------------------------------------------------
+ * A self-contained .ipk ships the game's extracted resource tree read-only under
+ * <appdir>/android/<apk>.data/. The engine wants it (plus its saves) in the
+ * writable per-apk data dir on /media/internal (FAT: no symlinks), so copy it
+ * once and leave a marker. No shell tools are available in the PDK jail. */
+static char packaged_seed_src[PATH_MAX];
+
+static int
+copy_tree(const char *src, const char *dst, unsigned long *nfiles)
+{
+    DIR *d = opendir(src);
+    if (!d) return -1;
+    struct stat st;
+    if (stat(dst, &st) != 0) mkdir(dst, 0777);
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char s[PATH_MAX], t[PATH_MAX];
+        snprintf(s, sizeof(s), "%s/%s", src, e->d_name);
+        snprintf(t, sizeof(t), "%s/%s", dst, e->d_name);
+        if (stat(s, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) { copy_tree(s, t, nfiles); continue; }
+        FILE *in = fopen(s, "rb"); if (!in) continue;
+        FILE *out = fopen(t, "wb"); if (!out) { fclose(in); continue; }
+        static char buf[65536]; size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), in)) > 0) fwrite(buf, 1, n, out);
+        fclose(out); fclose(in);
+        (*nfiles)++;
+    }
+    closedir(d);
+    return 0;
+}
+
+static void
+seed_data_dir(const char *seed_src, const char *main_data_dir, const char *apk_path)
+{
+    struct stat st;
+    if (stat(seed_src, &st) != 0 || !S_ISDIR(st.st_mode)) return;
+    const char *base = strrchr(apk_path, '/'); base = base ? base + 1 : apk_path;
+    char dst[PATH_MAX], marker[PATH_MAX];
+    snprintf(dst, sizeof(dst), "%s%s", main_data_dir, base);
+    snprintf(marker, sizeof(marker), "%s/.apkenv-seeded", dst);
+    if (stat(marker, &st) == 0) { printf("apkenv: data dir %s already seeded\n", dst); return; }
+    printf("apkenv: seeding %s from %s ...\n", dst, seed_src);
+    unsigned long n = 0;
+    recursive_mkdir(dst);
+    copy_tree(seed_src, dst, &n);
+    FILE *mf = fopen(marker, "w"); if (mf) fclose(mf);
+    printf("apkenv: seeded %lu files\n", n);
+}
+
 int main(int argc, char **argv)
 {
     intptr_t base = 0xdeadbeef;
@@ -628,7 +679,10 @@ int main(int argc, char **argv)
                  * neither a terminal nor /var/log/messages) — redirect both
                  * streams to a readable log on the writable partition BEFORE
                  * anything else, so an early failure is captured. */
-                FILE *lf = fopen("/media/internal/apkenv-wmw.log", "w");
+                char logpath[PATH_MAX];
+                const char *appid = strrchr(appdir, '/') ? strrchr(appdir, '/') + 1 : "app";
+                snprintf(logpath, sizeof(logpath), "/media/internal/apkenv-%s.log", appid);
+                FILE *lf = fopen(logpath, "w");
                 if (lf) {
                     dup2(fileno(lf), 1);
                     dup2(fileno(lf), 2);
@@ -666,6 +720,31 @@ int main(int argc, char **argv)
                     found = 1;
                 }
 #endif
+                /* Launch settings shipped with the package: android/apkenv.env
+                 * holds KEY=VALUE lines (e.g. APKENV_MARM_LOGICAL=1280x800) —
+                 * the launcher execs us with no shell, so this replaces play.sh. */
+                {
+                    char envpath[PATH_MAX];
+                    snprintf(envpath, sizeof(envpath), "%s/apkenv.env", androiddir);
+                    FILE *ef = fopen(envpath, "r");
+                    if (ef) {
+                        char line[512];
+                        while (fgets(line, sizeof(line), ef)) {
+                            char *nl = strpbrk(line, "\r\n"); if (nl) *nl = '\0';
+                            if (line[0] == '#' || line[0] == '\0') continue;
+                            char *eq = strchr(line, '=');
+                            if (!eq) continue;
+                            *eq = '\0';
+                            setenv(line, eq + 1, 0);
+                            printf("apkenv: env %s=%s\n", line, eq + 1);
+                        }
+                        fclose(ef);
+                    }
+                }
+                /* Bundled data tree: android/<apk>.data/ is seeded into the
+                 * writable per-apk data dir on first run (see seed_data_dir). */
+                if (found)
+                    snprintf(packaged_seed_src, sizeof(packaged_seed_src), "%s.data", apkpath);
                 if (found) {
                     static char *packaged_argv[2];
                     packaged_argv[0] = argv[0];
@@ -704,6 +783,8 @@ int main(int argc, char **argv)
     }
     read_config(config_path);
     free(config_path);
+    if (packaged_seed_src[0] && argc >= 2)
+        seed_data_dir(packaged_seed_src, main_data_dir, argv[1]);
 
     global.apkenv_executable = argv[0];
     global.apkenv_headline = APKENV_HEADLINE;

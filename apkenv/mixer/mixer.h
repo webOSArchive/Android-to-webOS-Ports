@@ -76,6 +76,12 @@ struct Mixer {
 
     void (*lame_resample_44100_32000)(struct Mixer *mixer, struct MixerSound *sound);
 
+    /* Post-mix hook: cb(udata, stream, len_bytes) runs on the audio thread after
+     * music+sounds are mixed, for engines that GENERATE their own PCM (e.g. the
+     * Marmalade SoundPlayer.generateAudio pump) and need to add it to the output. */
+    void (*set_postmix)(struct Mixer *mixer,
+            void (*cb)(void *udata, void *stream, int len), void *udata);
+
     // Internal structure to store the config from init
     struct AudioConfig config;
 };
@@ -100,5 +106,6 @@ void apkenv_mixer_set_sound_channel(struct MixerSound *sound, int channel);
 void apkenv_mixer_volume_music(struct MixerMusic *music, float volume);
 void apkenv_mixer_volume_sound(struct MixerSound *sound, float volume);
 void apkenv_mixer_sound_lame_resample_44100_32000(struct MixerSound *sound);
+void apkenv_mixer_set_postmix(void (*cb)(void *udata, void *stream, int len), void *udata);
 
 #endif /* APKENV_MIXER_H */

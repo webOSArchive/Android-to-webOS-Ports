@@ -1,0 +1,10 @@
+{
+    "id": "com.apkenv.pvzhd",
+    "version": "1.0.1",
+    "vendor": "apkenv",
+    "type": "pdk",
+    "main": "apkenv",
+    "title": "Plants vs. Zombies",
+    "icon": "icon.png",
+    "requiredMemory": 400
+}

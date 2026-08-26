@@ -6,6 +6,9 @@
 
 #include "gles_vtable.h"
 
+/* Clear the whole real framebuffer to opaque black (scissor off), restoring
+ * scissor/clear-color state. Used to paint letterbox bars each frame. */
+void apkenv_gles_clear_screen(void);
 void
 my_glAlphaFunc(GLenum func, GLclampf ref) SOFTFP;
 void

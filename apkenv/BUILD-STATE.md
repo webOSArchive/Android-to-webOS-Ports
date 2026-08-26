@@ -1,5 +1,20 @@
 # apkenv webOS port — BUILD STATE (persistent; do NOT keep this only in chat/scratch)
 
+## ⭐ 2026-08-26 — PvZ HD SHIPPED as a launcher .ipk (resume here for PvZ / the next game)
+- Package: `packaging/out/com.apkenv.pvzhd_1.0.1_all.ipk` (142 MB; apk + data tree + 44100-stereo
+  OGG music; `packaging/pvzhd/{appinfo.json,apkenv.env}`); installed + user-confirmed playable with
+  audio from the icon. Binary in it = working-tree build (`./build-webos.sh`, md5 c57c3a65 at
+  package time). Dev harness `/var/apkenv2/` (binary md5 122cdb55 + `play-pvz.sh`) also on device.
+- Device was re-flashed to webOS CE 3.1.0 on 2026-08-22: `/var/apkenv*` harnesses were gone and
+  were rebuilt over **novacom USB** (WiFi `.88` unreliable). Logs: `/media/internal/apkenv-pvz.log`
+  (harness) / `/media/internal/apkenv-com.apkenv.pvzhd.log` (packaged).
+- Build gotcha: no header dep tracking — `rm build/webos/*.o` after editing `apkenv.h`/`mixer.h`.
+- Method + lessons for the next game: `../PORTING-PLAYBOOK.md`; PvZ trail: `../plan/PVZ-HD-menu-freeze.md`.
+- Source changes are UNCOMMITTED in the working tree (user chose to keep as is): apkenv.c
+  (packaged env/seeding/per-app log), apkenv.h + gles_wrappers (viewport offset, clear), mixer
+  post-mix hook, sdl_mixer_impl load_music NULL fix, marmalade.c (readstring, tracer, audio,
+  letterbox), packaging/build-ipk.sh (DATA/ENVFILE), tools/deploy-tp.sh.
+
 ## ⭐ SESSION END STATE — 2026-06-28 — AUDIO ✅ VERIFIED ON DEVICE + PACKAGING SCAFFOLDED (resume here)
 
 **Audio (Stage 4) WORKS on the TouchPad — user-confirmed audible (2026-06-28).**

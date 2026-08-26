@@ -78,6 +78,7 @@ int apkenv_my_pthread_cond_destroy(pthread_cond_t *cond);
 int apkenv_my_pthread_cond_broadcast(pthread_cond_t *cond);
 int apkenv_my_pthread_cond_signal(pthread_cond_t *cond);
 int apkenv_my_pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex);
+int apkenv_my_pthread_join(pthread_t thid, void **ret_val);
 int apkenv_my_pthread_cond_timedwait(pthread_cond_t *cond,
                 pthread_mutex_t *mutex, const struct timespec *abstime);
 int apkenv_my_pthread_cond_timedwait_relative_np(pthread_cond_t *cond,

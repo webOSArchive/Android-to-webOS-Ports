@@ -22,6 +22,12 @@
 # libEGL.so (HP-proprietary) is harvested from a device into devlibs/ by
 # build-webos.sh; this script just copies it from there.
 #
+# Optional per-game extras (env):
+#   DATA=<dir>      extracted resource tree, shipped as android/<apk>.data/ and
+#                   seeded into /media/internal/.apkenv/<apk>/ on first launch
+#   ENVFILE=<file>  KEY=VALUE launch settings, shipped as android/apkenv.env
+#   APPINFO, ICON, README   overrides (see below)
+#
 # Usage: packaging/build-ipk.sh [path-to-bionic-libs-dir]
 set -e
 cd "$(dirname "$0")/.."          # -> apkenv/
@@ -47,6 +53,14 @@ cp devlibs/libEGL.so            "$STAGE/libs/webos/"   # harvested device lib
 if [ -f "$APK" ]; then
     cp "$APK" "$STAGE/android/$(basename "$APK")"
     echo "bundled game apk: android/$(basename "$APK") ($(stat -c%s "$APK") bytes)"
+    if [ -n "${DATA:-}" ] && [ -d "$DATA" ]; then
+        cp -r "$DATA" "$STAGE/android/$(basename "$APK").data"
+        echo "bundled data tree: android/$(basename "$APK").data ($(du -sh "$DATA" | cut -f1))"
+    fi
+    if [ -n "${ENVFILE:-}" ] && [ -f "$ENVFILE" ]; then
+        cp "$ENVFILE" "$STAGE/android/apkenv.env"
+        echo "bundled launch env: $(tr '\n' ' ' < "$ENVFILE")"
+    fi
 else
     echo "WARNING: game apk '$APK' not found — the .ipk will not be self-contained."
     echo "         The binary will fall back to APKENV_DEFAULT_APK on /media/internal."
@@ -59,7 +73,7 @@ if [ -n "${ICON:-}" ] && [ -f "$ICON" ]; then
     cp "$ICON" "$STAGE/icon.png"
 elif [ -f "$APK" ]; then
     rm -rf packaging/.icontmp && mkdir -p packaging/.icontmp
-    for n in iconfree ic_launcher; do
+    for n in iconfree ic_launcher icon; do
         for d in xhdpi hdpi mdpi drawable; do
             unzip -o -q "$APK" "res/drawable-$d/$n.png" -d packaging/.icontmp 2>/dev/null || \
             unzip -o -q "$APK" "res/$d/$n.png"          -d packaging/.icontmp 2>/dev/null || true

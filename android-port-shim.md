@@ -288,3 +288,16 @@ it is not a runtime shim concern.
 
 See also: `touchpad-porting.md` (PDK-game patching field guide) and Claude memory notes
 `wrapper-spike-progress`, `acl-anatomy`, `android-apk-port-triage`, `templerun2-port-analysis`.
+
+## 10. Second port: Plants vs. Zombies HD (Marmalade/Airplay) — what generalized
+
+Shipped 2026-08-26 as a launcher `.ipk`. The method that got it there (and the traps) is written up
+in **`PORTING-PLAYBOOK.md`**; the investigation record is `plan/PVZ-HD-menu-freeze.md`. In short:
+- the blocker was a **host-contract gap** (`AirplayView.getInputString` — the first-run name
+  dialog — never answered → engine spins in `s3eOSReadString`), found by decompiling the Java host
+  and diffing engine→Java calls against `modules/marmalade.c`; not an engine/threading bug;
+- new general runtime pieces: unhandled-JNI-call tracer, mixer post-mix hook (`generateAudio` pump),
+  JNI-signature dispatch per loader generation, letterbox via `module_hacks.viewport_offset_*` +
+  `apkenv_gles_clear_screen()`, packaged-launch `android/apkenv.env` + first-run data seeding;
+- device facts: SDL_mixer needs music at exactly 44100/stereo; `rm build/webos/*.o` after header
+  edits; USB/novacom is the reliable transport.

@@ -32,6 +32,7 @@
 #include <SDL.h>
 #include <SDL_mixer.h>
 #include <assert.h>
+#include <stdio.h>
 
 /* older SDL_mixer compatibility */
 #ifdef MIX_MAJOR_VERSION
@@ -83,7 +84,21 @@ sdl_mixer_load_music(struct Mixer *mixer, const char *filename)
 {
     struct MixerMusic *music = calloc(1, sizeof(struct MixerMusic));
     music->music = Mix_LoadMUS(filename);
+    if (!music->music) {
+        /* report failure instead of handing back an empty wrapper (callers
+         * treat non-NULL as "loaded" and would play silence) */
+        fprintf(stderr, "[mixer] Mix_LoadMUS('%s') failed: %s\n", filename, Mix_GetError());
+        free(music);
+        return NULL;
+    }
     return music;
+}
+
+static void
+sdl_mixer_set_postmix(struct Mixer *mixer,
+        void (*cb)(void *udata, void *stream, int len), void *udata)
+{
+    Mix_SetPostMix(cb, udata);
 }
 
 struct MixerMusic *
@@ -222,6 +237,7 @@ g_sdl_mixer = {
     sdl_mixer_volume_music,
     sdl_mixer_volume_sound,
     sdl_mixer_sound_lame_resample_44100_32000,
+    sdl_mixer_set_postmix,
     { 0 },
 };
 
