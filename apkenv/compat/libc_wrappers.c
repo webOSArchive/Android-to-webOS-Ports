@@ -1172,3 +1172,79 @@ my__memcpy_chk(void * dest, const void * src, size_t len, size_t destlen)
 {
     return __memcpy_chk(dest, src, len, destlen);
 }
+
+/* free() with an optional culprit trace: APKENV_TRACE_FREE=<hex ptr> reports the
+ * (bionic-side) caller of the first free() of that exact pointer — used to find
+ * who hands glibc an invalid pointer ("free(): invalid pointer" aborts). */
+#include <dlfcn.h>
+extern int apkenv_dladdr_nolock;
+void apkenv_my_free(void *p)
+{
+    static uintptr_t watch = 1; static int hits = 0;
+    if (watch == 1) { const char *e = getenv("APKENV_TRACE_FREE"); watch = e ? strtoul(e, NULL, 0) : 0; }
+    if (watch && (uintptr_t)p == watch && hits++ < 4) {
+        void *ra = __builtin_return_address(0);
+        Dl_info di; memset(&di, 0, sizeof(di)); int old = apkenv_dladdr_nolock; apkenv_dladdr_nolock = 1;
+        int ok = apkenv_android_dladdr(ra, &di); apkenv_dladdr_nolock = old;
+        fprintf(stderr, "[TRACE-FREE] free(%p) #%d from %p%s%s +0x%x %s\n", p, hits, ra,
+                ok ? " in " : "", ok ? di.dli_fname : "", ok ? (unsigned)((char*)ra - (char*)di.dli_fbase) : 0,
+                (ok && di.dli_sname) ? di.dli_sname : "");
+    }
+    free(p);
+}
+
+/* --- signal API layout translation (bionic <-> glibc) -----------------------
+ * bionic/ARM: struct sigaction = { handler, unsigned long sa_mask, int flags,
+ * restorer } (16 bytes) and sigset_t = unsigned long (4 bytes). glibc/ARM:
+ * sa_mask is a 128-byte sigset_t (struct sigaction = 140 bytes). Passing the
+ * bionic structs straight to glibc reads garbage and, worse, WRITES 140 bytes
+ * of oldact into a 16-byte caller struct (stack smash -> jump to junk). Seen
+ * with Mono's runtime signal setup. */
+#include <signal.h>
+struct bionic_sigaction { void *handler; unsigned long mask; int flags; void (*restorer)(void); };
+#define BIONIC_SA_RESTORER 0x04000000
+static void bionic_mask_to_glibc(unsigned long m, sigset_t *gs)
+{
+    int i; sigemptyset(gs);
+    for (i = 1; i <= 32; i++) if (m & (1ul << (i - 1))) sigaddset(gs, i);
+}
+static unsigned long glibc_mask_to_bionic(const sigset_t *gs)
+{
+    int i; unsigned long m = 0;
+    for (i = 1; i <= 32; i++) if (sigismember(gs, i)) m |= (1ul << (i - 1));
+    return m;
+}
+int apkenv_my_sigaction(int sig, const struct bionic_sigaction *act, struct bionic_sigaction *oldact)
+{
+    struct sigaction ga, go; int r;
+    memset(&ga, 0, sizeof(ga)); memset(&go, 0, sizeof(go));
+    if (act) {
+        ga.sa_sigaction = (void (*)(int, siginfo_t *, void *))act->handler;
+        bionic_mask_to_glibc(act->mask, &ga.sa_mask);
+        ga.sa_flags = act->flags & ~BIONIC_SA_RESTORER;
+    }
+    r = sigaction(sig, act ? &ga : NULL, oldact ? &go : NULL);
+    if (r == 0 && oldact) {
+        oldact->handler = (void *)go.sa_sigaction;
+        oldact->mask = glibc_mask_to_bionic(&go.sa_mask);
+        oldact->flags = go.sa_flags;
+        oldact->restorer = NULL;
+    }
+    return r;
+}
+int apkenv_my_pthread_sigmask(int how, const unsigned long *set, unsigned long *oset)
+{
+    sigset_t gs, go; int r;
+    if (set) bionic_mask_to_glibc(*set, &gs);
+    r = pthread_sigmask(how, set ? &gs : NULL, oset ? &go : NULL);
+    if (r == 0 && oset) *oset = glibc_mask_to_bionic(&go);
+    return r;
+}
+int apkenv_my_sigprocmask(int how, const unsigned long *set, unsigned long *oset)
+{
+    sigset_t gs, go; int r;
+    if (set) bionic_mask_to_glibc(*set, &gs);
+    r = sigprocmask(how, set ? &gs : NULL, oset ? &go : NULL);
+    if (r == 0 && oset) *oset = glibc_mask_to_bionic(&go);
+    return r;
+}

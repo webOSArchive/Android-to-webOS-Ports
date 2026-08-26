@@ -311,3 +311,8 @@ void my__FD_SET_chk(int fd, fd_set* set);
 void *my__memcpy_chk(void * dest, const void * src, size_t len, size_t destlen);
 
 void libc_wrappers_init(void);
+void apkenv_my_free(void *p);
+struct bionic_sigaction;
+int apkenv_my_sigaction(int sig, const struct bionic_sigaction *act, struct bionic_sigaction *oldact);
+int apkenv_my_pthread_sigmask(int how, const unsigned long *set, unsigned long *oset);
+int apkenv_my_sigprocmask(int how, const unsigned long *set, unsigned long *oset);

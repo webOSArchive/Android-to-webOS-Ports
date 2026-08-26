@@ -651,6 +651,8 @@ int main(int argc, char **argv)
 {
     intptr_t base = 0xdeadbeef;
     apkenv_base_of_stack = &base;
+    /* keep stdout in order with stderr when both go to a log file */
+    setvbuf(stdout, NULL, _IOLBF, 0);
     global.platform = &platform_support;
 
 #ifdef __webos__

@@ -3,7 +3,11 @@
 {"valloc", valloc},
 {"realloc", realloc},
 {"calloc", calloc},
-{"free", free},
+{"free", apkenv_my_free},
+{"memalign", memalign},
+{"pvalloc", pvalloc},
+{"malloc_usable_size", malloc_usable_size},
+
 {"strdup", strdup},
 
 {"open", open},
@@ -143,7 +147,8 @@
 {"qsort", qsort},
 {"bsearch", bsearch},
 {"shutdown", shutdown},
-{"sigaction", sigaction},
+{"sigaction", apkenv_my_sigaction},
+{"sigprocmask", apkenv_my_sigprocmask},
 //{"siglongjmp", siglongjmp},
 //{"sigsetjmp", _sigsetjmp},
 {"strtok_r", strtok_r},

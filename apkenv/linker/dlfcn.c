@@ -164,11 +164,15 @@ err:
     return 0;
 }
 
+/* set by the crash handler: the fault may have happened while the linker
+ * lock is held (constructors), so never block on it from there */
+int apkenv_dladdr_nolock = 0;
+
 int apkenv_android_dladdr(const void *addr, Dl_info *info)
 {
     int ret = 0;
 
-    pthread_mutex_lock(&apkenv_dl_lock);
+    if (!apkenv_dladdr_nolock) pthread_mutex_lock(&apkenv_dl_lock);
 
     /* Determine if this address can be found in any library currently mapped */
     soinfo *si = apkenv_find_containing_library(addr);
@@ -190,7 +194,7 @@ int apkenv_android_dladdr(const void *addr, Dl_info *info)
         ret = 1;
     }
 
-    pthread_mutex_unlock(&apkenv_dl_lock);
+    if (!apkenv_dladdr_nolock) pthread_mutex_unlock(&apkenv_dl_lock);
 
     return ret;
 }

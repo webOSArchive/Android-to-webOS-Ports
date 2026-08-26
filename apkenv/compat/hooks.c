@@ -30,11 +30,15 @@
  **/
 
 #include <stdio.h>
+#include <dlfcn.h>
 #include <stdlib.h>
+#include <malloc.h>
 #include <string.h>
 #include <sys/uio.h>
 
 #include "hooks.h"
+#include "../apkenv.h"
+#include "../linker/linker.h"
 
 #include "libc_wrappers.h"
 #include "liblog_wrappers.h"
@@ -230,8 +234,54 @@ int is_lib_optional(const char *name)
     return 0;
 }
 
+/* --- call tracer (APKENV_TRACE_CALLS="lib:sym,lib:sym,...", max 16) ---------
+ * Registers logging hooks for the named symbols; each forwards its first four
+ * word arguments to the real symbol in the named library and logs entry/exit.
+ * Brackets which engine->runtime call crashes, without a debugger. */
+#define TRACE_MAX 16
+static char *trace_lib[TRACE_MAX], *trace_sym[TRACE_MAX];
+static void *trace_real[TRACE_MAX];
+static int trace_n = 0;
+extern struct GlobalState global;
+static void *trace_call(int i, int a, int b, int c, int d)
+{
+    if (!trace_real[i]) {   /* hook-free lookup straight in the library's symtab */
+        char ln[128]; snprintf(ln, sizeof(ln), "%s%s", trace_lib[i], strstr(trace_lib[i], ".so") ? "" : ".so");
+        soinfo *si = apkenv_find_library(ln);
+        Elf32_Sym *sym = si ? apkenv_lookup_in_library(si, trace_sym[i]) : NULL;
+        if (sym && sym->st_shndx != 0) trace_real[i] = (void *)(sym->st_value + si->base);
+    }
+    fprintf(stderr, "[TRACE] -> %s(%#x, %#x, %#x, %#x) real=%p\n", trace_sym[i], a, b, c, d, trace_real[i]);
+    if (!trace_real[i]) { fprintf(stderr, "[TRACE] %s unresolved\n", trace_sym[i]); return NULL; }
+    void *r = ((void *(*)(int,int,int,int))trace_real[i])(a, b, c, d);
+    fprintf(stderr, "[TRACE] <- %s = %p\n", trace_sym[i], r);
+    return r;
+}
+#define TR(n) static void *trace_fn_##n(int a,int b,int c,int d){ return trace_call(n,a,b,c,d); }
+TR(0) TR(1) TR(2) TR(3) TR(4) TR(5) TR(6) TR(7) TR(8) TR(9) TR(10) TR(11) TR(12) TR(13) TR(14) TR(15)
+static void *trace_fns[TRACE_MAX] = { trace_fn_0,trace_fn_1,trace_fn_2,trace_fn_3,trace_fn_4,trace_fn_5,trace_fn_6,trace_fn_7,
+    trace_fn_8,trace_fn_9,trace_fn_10,trace_fn_11,trace_fn_12,trace_fn_13,trace_fn_14,trace_fn_15 };
+static void trace_register(void)
+{
+    const char *e = getenv("APKENV_TRACE_CALLS");
+    if (!e || !e[0]) return;
+    char *dup = strdup(e), *tok = strtok(dup, ",");
+    int i;
+    for (i = 0; i < HOOKS_MAX && hooks[i].name; i++) ;
+    while (tok && trace_n < TRACE_MAX && i < HOOKS_MAX - 1) {
+        char *colon = strchr(tok, ':');
+        if (colon) { *colon = 0; trace_lib[trace_n] = strdup(tok); trace_sym[trace_n] = strdup(colon + 1); }
+        else { trace_lib[trace_n] = strdup("libmono"); trace_sym[trace_n] = strdup(tok); }
+        hooks[i].name = trace_sym[trace_n]; hooks[i].func = trace_fns[trace_n];
+        fprintf(stderr, "[TRACE] hooking %s:%s\n", trace_lib[trace_n], trace_sym[trace_n]);
+        i++; trace_n++; tok = strtok(NULL, ",");
+    }
+    hooks[i].name = NULL;
+}
+
 void hooks_init(void)
 {
+    trace_register();
     int i;
 
     for (i = 0; i < HOOKS_MAX; i++)
@@ -253,7 +303,13 @@ void hooks_init(void)
 
 static void no_hook(void)
 {
-    fprintf(stderr, "called a function for which no hook is available\n");
+    void *ra = __builtin_return_address(0);
+    Dl_info di; memset(&di, 0, sizeof(di));
+    extern int apkenv_dladdr_nolock; apkenv_dladdr_nolock = 1;
+    int ok = apkenv_android_dladdr(ra, &di);
+    fprintf(stderr, "called a function for which no hook is available (from %p%s%s +0x%x %s)\n", ra,
+            ok ? " in " : "", ok ? di.dli_fname : "?", ok ? (unsigned)((char*)ra - (char*)di.dli_fbase) : 0,
+            (ok && di.dli_sname) ? di.dli_sname : "");
     exit(6);
 }
 

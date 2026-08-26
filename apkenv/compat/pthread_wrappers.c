@@ -1283,3 +1283,28 @@ int apkenv_my_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
 }
 #endif
 
+
+/* bionic pthread_cleanup_push/pop: the macros in bionic's <pthread.h> expand to
+ * these two calls with a caller-provided record. Keep a per-thread stack. */
+typedef struct bionic_cleanup { struct bionic_cleanup *prev; void (*routine)(void*); void *arg; } bionic_cleanup_t;
+static __thread bionic_cleanup_t *apkenv_cleanup_head = NULL;
+void apkenv_my___pthread_cleanup_push(void *cv, void (*routine)(void*), void *arg)
+{
+    bionic_cleanup_t *c = cv;
+    c->routine = routine; c->arg = arg; c->prev = apkenv_cleanup_head; apkenv_cleanup_head = c;
+}
+void apkenv_my___pthread_cleanup_pop(void *cv, int execute)
+{
+    bionic_cleanup_t *c = cv;
+    apkenv_cleanup_head = c->prev;
+    if (execute && c->routine) c->routine(c->arg);
+}
+
+/* bionic __pthread_gettid(pthread_t): kernel tid of a thread. glibc has no
+ * public equivalent; answer for the calling thread, else 0. */
+#include <sys/syscall.h>
+int apkenv_my___pthread_gettid(pthread_t t)
+{
+    if (pthread_equal(t, pthread_self())) return (int)syscall(SYS_gettid);
+    return 0;
+}
