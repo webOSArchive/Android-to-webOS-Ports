@@ -129,6 +129,13 @@ contract diff found four gaps (zip-wrapped `readFile`, 3-arg key input, missing 
 `nativeResize`, `getUniqueId`) and one build omission; fixed statically; **booted with music on the
 first device launch**. ~1 hour. `plan/AMAZING-ALEX.md`.
 
+**A harder class — Unity/Mono (Temple Run 2, open):** when the engine brings its own runtime
+(Mono JIT, Boehm GC) the failures move below the Java contract into **bionic↔glibc ABI mismatches**:
+unhooked allocator entry points (a second heap), struct layouts (`sigaction`, `sigset_t`,
+`pthread_attr_t`), fatal stubs for bionic-private pthread calls. Symptoms are corruption, not
+clean errors. Use `APKENV_TRACE_CALLS`, `APKENV_TRACE_FREE`, the register-dumping crash handler,
+and audit every hooked symbol whose struct crosses the boundary. `plan/TEMPLERUN2.md`.
+
 ## 6. Checklist for the next game
 
 - [ ] Triage (engine, GL, audio, Java share); identify the *game* binary vs the *runtime*.

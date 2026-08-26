@@ -82,3 +82,4 @@ first after the harness.
     `0x3f891c`.
 - `PVZ-HD-menu-freeze.md` — PvZ HD (Marmalade/Airplay): contract-review root cause of the menu freeze, audio, letterbox, packaging. Method distilled in `../PORTING-PLAYBOOK.md`.
 - `AMAZING-ALEX.md` — Amazing Alex HD (Rovio ka3d / angrybirds module): one-pass port using the playbook; zip-aware readFile contract.
+- `TEMPLERUN2.md` — Unity 3.5 + Mono: open; bionic↔glibc ABI layer findings, crash tooling, next steps.
