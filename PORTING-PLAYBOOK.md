@@ -124,6 +124,11 @@ Memory: PvZ needs ~450 MB free; `requiredMemory` in `appinfo.json` makes webOS r
   that makes the next install fail `FAILED_PACKAGEFILE_NOT_FOUND` — `rm -rf` it first.
 - Packaged log: `/media/internal/apkenv-<appid>.log`.
 
+**Worked example of the method (Amazing Alex HD, 2026-08-26):** triage → ka3d = `angrybirds.c`;
+contract diff found four gaps (zip-wrapped `readFile`, 3-arg key input, missing post-init
+`nativeResize`, `getUniqueId`) and one build omission; fixed statically; **booted with music on the
+first device launch**. ~1 hour. `plan/AMAZING-ALEX.md`.
+
 ## 6. Checklist for the next game
 
 - [ ] Triage (engine, GL, audio, Java share); identify the *game* binary vs the *runtime*.

@@ -1,0 +1,10 @@
+{
+    "id": "com.apkenv.amazingalex",
+    "version": "1.0.0",
+    "vendor": "apkenv",
+    "type": "pdk",
+    "main": "apkenv",
+    "title": "Amazing Alex",
+    "icon": "icon.png",
+    "requiredMemory": 200
+}

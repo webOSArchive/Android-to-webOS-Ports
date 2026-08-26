@@ -81,3 +81,4 @@ first after the harness.
   - Stability patch (already baked into the apk): 1-insn `std::string(NULL)` fix @ file-offset
     `0x3f891c`.
 - `PVZ-HD-menu-freeze.md` — PvZ HD (Marmalade/Airplay): contract-review root cause of the menu freeze, audio, letterbox, packaging. Method distilled in `../PORTING-PLAYBOOK.md`.
+- `AMAZING-ALEX.md` — Amazing Alex HD (Rovio ka3d / angrybirds module): one-pass port using the playbook; zip-aware readFile contract.

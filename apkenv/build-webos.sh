@@ -108,6 +108,7 @@ SOURCES="$SOURCES platform/webos.c"
 SOURCES="$SOURCES modules/wheresmywater.c"
 SOURCES="$SOURCES modules/wheresmywater2.c"
 SOURCES="$SOURCES modules/marmalade.c"
+SOURCES="$SOURCES modules/angrybirds.c"
 
 OBJS=""
 for src in $SOURCES; do

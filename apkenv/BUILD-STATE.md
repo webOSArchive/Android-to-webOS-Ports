@@ -1,5 +1,10 @@
 # apkenv webOS port — BUILD STATE (persistent; do NOT keep this only in chat/scratch)
 
+## ⭐ 2026-08-26 (later) — Amazing Alex HD SHIPPED too (one-pass port via PORTING-PLAYBOOK.md)
+- `packaging/out/com.apkenv.amazingalex_1.0.0_all.ipk` (23 MB), installed, launcher-icon confirmed.
+  Module `modules/angrybirds.c` (Rovio ka3d) now in the webOS build; binary md5 e5abce55 hosts
+  WMW + PvZ + Alex. Trail: `../plan/AMAZING-ALEX.md`. All of today's work committed.
+
 ## ⭐ 2026-08-26 — PvZ HD SHIPPED as a launcher .ipk (resume here for PvZ / the next game)
 - Package: `packaging/out/com.apkenv.pvzhd_1.0.1_all.ipk` (142 MB; apk + data tree + 44100-stereo
   OGG music; `packaging/pvzhd/{appinfo.json,apkenv.env}`); installed + user-confirmed playable with
@@ -10,7 +15,7 @@
   (harness) / `/media/internal/apkenv-com.apkenv.pvzhd.log` (packaged).
 - Build gotcha: no header dep tracking — `rm build/webos/*.o` after editing `apkenv.h`/`mixer.h`.
 - Method + lessons for the next game: `../PORTING-PLAYBOOK.md`; PvZ trail: `../plan/PVZ-HD-menu-freeze.md`.
-- Source changes are UNCOMMITTED in the working tree (user chose to keep as is): apkenv.c
+- Source changes (committed 2026-08-26 evening): apkenv.c
   (packaged env/seeding/per-app log), apkenv.h + gles_wrappers (viewport offset, clear), mixer
   post-mix hook, sdl_mixer_impl load_music NULL fix, marmalade.c (readstring, tracer, audio,
   letterbox), packaging/build-ipk.sh (DATA/ENVFILE), tools/deploy-tp.sh.
