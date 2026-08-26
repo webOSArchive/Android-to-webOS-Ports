@@ -56,7 +56,54 @@ Traced Mono call order from libunity: `mono_file_map_override`, `mono_register_m
 `mono_parse_default_optimizations`, `mono_set_defaults`, `mono_set_commandline_arguments`,
 `mono_jit_init_version` (crash somewhere after this begins).
 
-## Next steps (in order)
+## Recommended path: port Mono natively (decided 2026-08-26 evening)
+
+Why the bionic `libmono` is the wrong thing to fight: it is the one component that does everything
+glibc-hostile at once — signal handlers, thread attach, Boehm GC stack scanning, JIT page mmap/mprotect
+— and **fast TLS**: `libmono` exports `mono_pthread_key_for_tls`, the Android mechanism that lets the
+JIT emit *inline* TLS access through bionic's TLS slots (`__get_tls()`, register-based). Under apkenv
+that register points at **glibc's** thread control block, so JIT-emitted code would read/write glibc's
+TCB directly. That is not a function call and cannot be hooked; it is a plausible cause of the
+"pointer overwritten with text" crash. Every remaining mismatch below the libc line is a corruption
+hunt, not a contract gap — the playbook method stops applying there.
+
+Why a native Mono is tractable:
+- Unity's Mono fork is open source (`Unity-Technologies/mono`, the 3.5-era branch). Only the RUNTIME
+  (`libmono.so`) is needed — no managed toolchain — and Mono 2.6-era configures with
+  `--host=arm-none-linux-gnueabi` against the PalmPDK toolchain we already link with.
+- The `libunity` ↔ `libmono` boundary is a plain C API: ~150 `mono_*` imports (list: `nm -D
+  libunity.so | grep " U mono_"`), and libunity uses accessor functions (`mono_class_get_*`,
+  `mono_field_get_*`, `mono_signature_*`) rather than struct fields, so version coupling is loose.
+  Callbacks the other way (`mono_add_internal_call`, `mono_file_map_override`, the plugin-finder,
+  `mono_runtime_invoke`) are function pointers under the same EABI softfp ABI.
+- apkenv already bridges host libraries into bionic code (the GL/SDL hook tables). A **host-lib
+  bridge** — `dlopen` a glibc-built `.so` and export its symbols into the hook table, entry list
+  generated mechanically — is general infrastructure for any engine that carries its own runtime.
+
+Risks: exact fork state must match 3.5.7f6 (version string is in `libmono`'s strings); Mono's
+configure vs the old toolchain; Unity-private exports must exist in the branch
+(`mono_unity_set_embeddinghostname`, `mono_unity_socket_security_enabled_set`,
+`mono_set_find_plugin_callback`, `mono_verifier_set_mode`, `mono_file_map_override`). This removes
+only the Mono half — GLES2 + portrait FBO for a GLES2 context + FMOD still follow.
+
+Staged plan:
+1. **Confirm the TLS theory (10 min, offline):** disassemble `mono_pthread_key_for_tls` and the JIT
+   TLS helpers in `libmono.so`; look for reads of the kuser TLS helper `0xffff0fe0` / `mrc p15` TLS
+   register. If present, the switch is justified on its own.
+2. **Pin the version:** `strings libmono.so | grep -iE "^2\.[0-9]|unity"`; check out the matching
+   `Unity-Technologies/mono` tag/branch.
+3. **Build the runtime only:** cross-configure for `arm-none-linux-gnueabi` (glibc 2.4 target,
+   `--disable-mcs-build`, Boehm GC in-tree, `--with-tls=pthread` if the fast-TLS path is fragile);
+   output `libmono.so` linked against the device glibc.
+4. **Host-lib bridge in apkenv:** `dlopen()` the glibc `libmono.so` on the host side; generate hook
+   entries for every `mono_*` symbol libunity imports (script from `nm -D`), so the linker resolves
+   libunity's imports to the native runtime instead of the bionic one; blacklist the apk's
+   `libmono.so` from loading (`libblacklist` in `apkenv.c`).
+5. **Run with the tracer** (`APKENV_TRACE_CALLS=libmono:mono_jit_init_version,…` — fix the tracer's
+   self-recursion first) and the playbook's contract review on whatever libunity asks next.
+6. Then GLES version selection for Unity, GLES2-capable FBO present, FMOD pump verification.
+
+## Next steps if staying on the bionic Mono (fallback; in order)
 1. Fix the tracer recursion: the resolved "real" `mono_file_map_override` re-entered the tracer
    (likely resolved to a PLT/hook path) — resolve via the lib's symtab value only, or skip entries
    whose address equals the wrapper; then bracket which Mono call corrupts memory.
