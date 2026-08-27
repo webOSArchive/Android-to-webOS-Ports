@@ -73,7 +73,7 @@ if [ -n "${ICON:-}" ] && [ -f "$ICON" ]; then
     cp "$ICON" "$STAGE/icon.png"
 elif [ -f "$APK" ]; then
     rm -rf packaging/.icontmp && mkdir -p packaging/.icontmp
-    for n in iconfree ic_launcher icon; do
+    for n in iconfree ic_launcher app_icon icon; do
         for d in xhdpi hdpi mdpi drawable; do
             unzip -o -q "$APK" "res/drawable-$d/$n.png" -d packaging/.icontmp 2>/dev/null || \
             unzip -o -q "$APK" "res/$d/$n.png"          -d packaging/.icontmp 2>/dev/null || true
@@ -93,6 +93,18 @@ elif [ -f "$APK" ]; then
     rm -rf packaging/.icontmp
 fi
 
+# Host (glibc) libraries bridged in by compat/hostlib.c - e.g. the natively-built
+# Mono runtime that replaces Unity's bionic libmono.so. These are NOT bionic libs
+# and must never land in libs/webos/, which is the bionic linker's search path.
+# apkenv chdir()s to its own directory, so a run-dir-relative APKENV_HOST_MONO
+# in the env file resolves against the installed app dir.
+if [ -n "${HOSTLIBS:-}" ] && [ -d "$HOSTLIBS" ] && ls "$HOSTLIBS"/*.so >/dev/null 2>&1; then
+    mkdir -p "$STAGE/hostlibs/webos"
+    cp "$HOSTLIBS"/*.so "$STAGE/hostlibs/webos/"
+    echo "bundled host libs from $HOSTLIBS:"
+    ls -la "$STAGE/hostlibs/webos/" | tail -n +2
+fi
+
 if [ -d "$LIBS" ] && ls "$LIBS"/*.so >/dev/null 2>&1; then
     cp "$LIBS"/*.so "$STAGE/libs/webos/" 2>/dev/null || true
     echo "bundled bionic libs from $LIBS:"
@@ -107,5 +119,6 @@ fi
 OUT=packaging/out
 mkdir -p "$OUT"
 palm-package --outdir "$OUT" "$STAGE"
-echo "DONE: $(ls -1 "$OUT"/*.ipk 2>/dev/null | tail -1)"
+# Name THIS package, not whatever sorts last in the output dir.
+echo "DONE: $(ls -1t "$OUT"/${APPID}_*.ipk 2>/dev/null | head -1)"
 echo "Install on device:  palm-install <that>.ipk    (or on-device: ipkg install)"

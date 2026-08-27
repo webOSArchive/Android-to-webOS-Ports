@@ -1,0 +1,10 @@
+{
+    "id": "com.apkenv.templerun2",
+    "version": "0.1.0",
+    "vendor": "apkenv",
+    "type": "pdk",
+    "main": "apkenv",
+    "title": "Temple Run 2",
+    "icon": "icon.png",
+    "requiredMemory": 320
+}
