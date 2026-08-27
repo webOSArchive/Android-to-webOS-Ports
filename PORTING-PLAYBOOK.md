@@ -248,7 +248,15 @@ TouchPad — and the remaining work went straight back to being ordinary Java-co
 - [ ] Tracer + per-contract log lines in the module; test protocol written (expected lines).
 - [ ] Input pump on yield; dialogs answered; audio shape identified; display aspect declared.
 - [ ] Data tree extracted + music transcoded 44100/stereo; `packaging/<game>/` (appinfo, env).
+- [ ] **Whose job list:** what did the ANDROID PLATFORM do that we now don't? Splash/window over the
+      load, settings the player expects to work, lifecycle callbacks. Each is ours to supply.
+- [ ] **Settings we already host:** dump the device's prefs/save files and wire the ones the player
+      can see (music/sound volume) to whatever the shim does itself.
+- [ ] Any generated `EXTRAS=` payload (decoded audio, splash) has a **script** that rebuilds it and
+      verifies a checksum — never a lone copy in `packaging/stage/`, which every build wipes.
 - [ ] One change per device test; results recorded in `plan/`.
+- [ ] Ship check: unpack the final `.ipk` and read its `apkenv.env` — no debug/instrumentation vars;
+      install it so the device runs what ships; clear `apkenv-snap-*.ppm` debris.
 
 ---
 
