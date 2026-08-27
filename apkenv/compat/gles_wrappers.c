@@ -238,6 +238,8 @@ my_glAlphaFunc(GLenum func, GLclampf ref)
  * is the engine submitting geometry at all, and where is it sending it? */
 #include <stdio.h>
 #include <stdlib.h>
+#include "etc1.h"
+
 unsigned long gp_draws, gp_verts, gp_draws2, gp_verts2;
 int gp_vp2[4];
 int gp_on = -1;
@@ -840,6 +842,42 @@ my_glColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer
 void
 my_glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const GLvoid *data)
 {
+    /* GL_ETC1_RGB8_OES. Android games ship ETC1 as standard, but this device's
+     * GLES1 context does not advertise GL_OES_compressed_ETC1_RGB8_texture and
+     * the driver answers GL_INVALID_ENUM - the upload is dropped and everything
+     * draws untextured. Decode on the CPU and upload RGB8 instead. */
+#ifndef GL_ETC1_RGB8_OES
+#define GL_ETC1_RGB8_OES 0x8D64
+#endif
+    if (internalformat == GL_ETC1_RGB8_OES && data != NULL && width > 0 && height > 0) {
+        unsigned char *rgb = apkenv_etc1_decode(data, width, height);
+        if (rgb != NULL) {
+            functions.glTexImage2D(target, level, GL_RGB, width, height, border,
+                                   GL_RGB, GL_UNSIGNED_BYTE, rgb);
+            free(rgb);
+            return;
+        }
+        /* Out of memory: fall through and let the driver reject it as before,
+         * rather than silently binding whatever was there. */
+    }
+    if (gp_enabled()) {
+        static int n = 0;
+        if (n < 8) { n++;
+            fprintf(stderr, "[GLPROBE] glCompressedTexImage2D %dx%d internalformat=0x%x size=%d\n",
+                    width, height, (unsigned)internalformat, imageSize);
+        }
+        /* Report the FIRST GL error seen after an upload: a rejected texture is
+         * the classic cause of "geometry draws but everything is flat/untextured". */
+        {
+            GLenum e = functions.glGetError();
+            static int reported = 0;
+            if (e != GL_NO_ERROR && reported < 4) { reported++;
+                fprintf(stderr, "[GLPROBE] GL ERROR 0x%x after compressed upload "
+                                "(internalformat 0x%x)\n", (unsigned)e, (unsigned)internalformat);
+            }
+        }
+    }
+
     WRAPPERS_DEBUG_PRINTF("glCompressedTexImage2D()\n", target, level, internalformat, width, height, border, imageSize, data);
     functions.glCompressedTexImage2D(target, level, internalformat, width, height, border, imageSize, data);
 }
@@ -1358,6 +1396,15 @@ my_glTexEnvxv(GLenum target, GLenum pname, const GLfixed *params)
 void
 my_glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *pixels)
 {
+    if (gp_enabled()) {
+        static int n = 0;
+        if (n < 8) { n++;
+            fprintf(stderr, "[GLPROBE] glTexImage2D %dx%d internalformat=0x%x format=0x%x type=0x%x data=%s\n",
+                    width, height, (unsigned)internalformat, (unsigned)format,
+                    (unsigned)type, pixels ? "yes" : "NULL");
+        }
+    }
+
     int maxsize = 0;
     functions.glGetIntegerv(GL_MAX_TEXTURE_SIZE,&maxsize);
 
