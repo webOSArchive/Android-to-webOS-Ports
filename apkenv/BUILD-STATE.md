@@ -1,5 +1,32 @@
 # apkenv webOS port — BUILD STATE (persistent; do NOT keep this only in chat/scratch)
 
+## ⭐ 2026-08-27 (latest) — Boot splash: the host draws it, because the engine never does
+
+`com.apkenv.templerun2` **1.4.0** shows the game's splash art through the load instead of a black
+screen. **New general capability, any ES2 render-to-FBO game:** `APKENV_SPLASH_RGB=<raw RGB24>`
+(+ `APKENV_SPLASH_SIZE=<w>x<h>`, default the FBO's) is uploaded in `apkenv_fbo_es2_ensure()` and
+ridden on the existing rotated present quad, so it gets portrait rotation for free. Handover is
+self-timing: shown while `apkenv_gl_draws == 0`, retired and freed on the first present after the
+engine draws — no duration to tune.
+
+Two findings behind it, both general:
+- **`lib/armeabi-v7a/libunity.so` is a 43 KB PROXY**; the real 6.8 MB engine is inside
+  `assets/libs/armeabi-v7a/`. Grep the wrong one and you get a false negative that reads like a
+  finding.
+- **Neither that engine nor the Java host references `splash.png`** — `settings.xml`'s
+  `splash_mode` is only a scaling policy. On Android the Activity's window covers the load; we have
+  no Activity, so nothing covered it. The earlier "splash.png is read" came from a seek-range probe
+  that could not tell an open from a read crossing that apk offset.
+
+The load itself is one blocking `unityAndroidInit` during which **nothing presents**, so the panel
+holds the last swapped buffer — hence two `platform->update()` calls before it (twice: one swap
+leaves the other buffer black). `tools/tr2-extract-splash.sh` builds the raw image; it must be
+bottom-row-first (GL origin) and portrait at the FBO size, not pre-rotated.
+
+Sequence confirmed on device, `../plan/logs/tr2-splash-1.log`. **How it looks is not yet
+confirmed** — the snapshot run died with the novacom link.
+
+
 ## ⭐ 2026-08-27 (latest) — Temple Run 2 has MUSIC: a PCM bed mixed into the FMOD pump
 
 `com.apkenv.templerun2` **1.3.8** ships with music. Unity's own native FMOD stream is still stuck

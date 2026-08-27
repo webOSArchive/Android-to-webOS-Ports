@@ -28,8 +28,8 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
   icon with audio, centered letterbox; `apkenv/packaging/out/com.apkenv.pvzhd_1.0.1_all.ipk`.
   Full trail: `plan/PVZ-HD-menu-freeze.md`. Module: `apkenv/modules/marmalade.c`.
 
-- **Temple Run 2 (Unity 3.5 + Mono) — RELEASED 1.3.9 (2026-08-27), music working.**
-  `apkenv/packaging/out/com.apkenv.templerun2_1.3.9_all.ipk`: launcher icon, **portrait** (ES2
+- **Temple Run 2 (Unity 3.5 + Mono) — RELEASED 1.4.0 (2026-08-27), music + splash working.**
+  `apkenv/packaging/out/com.apkenv.templerun2_1.4.0_all.ipk`: launcher icon, **portrait** (ES2
   render-to-FBO rotated present, `apkenv/compat/fbo_es2.c`), touch menus, swipe, tilt steering
   (PDL sensors — apkenv's SDL-joystick accelerometer never worked on webOS), textured 3D on
   Unity's own GLES2 device, sound effects, and music. Unity's native FMOD stream still stalls after
@@ -37,18 +37,22 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
   time and mixes it into the existing FMOD AudioTrack pump. The PCM is bundled under
   `android/extras/`, and the bed **obeys the in-game music slider** — the setting lives in
   PlayerPrefs, which apkenv implements, so `APKENV_FMOD_MUSIC_PREF=TR Music Volume` drives the mix
-  gain live (0 = off). Full evidence and packaging instructions: `plan/TEMPLERUN2-RENDER-INPUT.md`.
-  Also no splash screen.
+  gain live (0 = off). The **boot splash** is drawn by the host, not the engine: the real libunity
+  never opens `splash.png` (the one in `lib/` is a 43 KB proxy — the engine is in `assets/libs/`),
+  so `APKENV_SPLASH_RGB` rides the existing rotated present quad and retires on the engine's first
+  draw. Full evidence and packaging instructions: `plan/TEMPLERUN2-RENDER-INPUT.md`.
   **The lesson worth carrying:** `nativeInit(II)` is `(glesMode, splashMode)`, NOT
   `(width, height)` — passing the size made the engine pick its fixed-function renderer and skip
   the splash, and cost a session of disassembly. See `PORTING-PLAYBOOK.md`.
-  Regenerate the music PCM with `apkenv/tools/tr2-extract-music.sh` (the `.resS` is **two
-  concatenated MP3s**; it splits at `0xe4800` and md5-checks the result) and package with
-  `EXTRAS=packaging/extras/templerun2`. That dir is gitignored and is the only surviving copy —
-  `build-ipk.sh` wipes `packaging/stage/` on every run.
-  Tools: `apkenv/tools/tr2-run.sh`, `apkenv/tools/tr2-extract-music.sh`, `tools/ildump.py`,
-  `APKENV_GL_SNAPSHOT`, `APKENV_THREAD_SAMPLE`, `APKENV_TRACE_SEEK_RANGE`, `APKENV_AUDIO_METER`,
-  `APKENV_FMOD_MUSIC_PCM`/`_GAIN`/`_PREF`, `APKENV_GL_DEBUG`.
+  Regenerate the `EXTRAS` payloads with `apkenv/tools/tr2-extract-music.sh` (the `.resS` is **two
+  concatenated MP3s**; it splits at `0xe4800` and md5-checks the result) and
+  `apkenv/tools/tr2-extract-splash.sh` (raw RGB24, **bottom row first** for GL's origin), then
+  package with `EXTRAS=packaging/extras/templerun2`. That dir is gitignored and is the only
+  surviving copy — `build-ipk.sh` wipes `packaging/stage/` on every run.
+  Tools: `apkenv/tools/tr2-run.sh`, `tr2-extract-music.sh`, `tr2-extract-splash.sh`,
+  `tools/ildump.py`, `APKENV_GL_SNAPSHOT`, `APKENV_THREAD_SAMPLE`, `APKENV_TRACE_SEEK_RANGE`,
+  `APKENV_AUDIO_METER`, `APKENV_FMOD_MUSIC_PCM`/`_GAIN`/`_PREF`, `APKENV_SPLASH_RGB`/`_SIZE`,
+  `APKENV_GL_DEBUG`.
 
 ## Where's My Water? (first port)
 - **Playable end-to-end with audio**, ships as `com.apkenv.wheresmywater` `.ipk` (launcher icon). Portrait via render-to-FBO; FMOD audio pump. Full writeup: `android-port-shim.md`, `apkenv/BUILD-STATE.md`, `plan/STAGE-*.md`.

@@ -573,6 +573,11 @@ scan gives the chain - but nothing is drawn with it: the presents around `unityA
 **0 draw calls**, then 80 at the first real frame. Forcing extra presents there did not show it
 (and made the approach to the menu choppy - reverted).
 
+> **Superseded (2026-08-27).** The engine never opens that file - see "Splash: the engine was never
+> going to draw it" below. The "is read" conclusion came from a seek-range probe over the apk, which
+> cannot tell "the engine opened splash.png" from "a read crossed the offset range splash.png
+> occupies". Third time this document records a probe that measured the wrong thing.
+
 ## Instrumentation left behind, all env-gated
 
 `APKENV_GL_DEBUG` (GL path marks, FBO binds, per-present draw counts), `APKENV_HOOK_DEBUG` (hook
@@ -710,3 +715,94 @@ following Unity's per-scene music source: it does not change with the scene, and
 for the menus that would normally be quiet. What it now does respect is the player's music volume,
 including muting. Fixing the native stream properly would replace the whole thing - the env vars
 are the only switch.
+
+---
+
+# Splash: the engine was never going to draw it (2026-08-27)
+
+## The static answer, in three greps
+
+`libunity.so` **in `lib/armeabi-v7a/` is a 43 KB proxy** whose only interesting string is
+`/assets/libs/armeabi-v7a/libunity.so`. The real 6.8 MB engine lives inside `assets/libs/`. Grepping
+the wrong one is a false negative that looks exactly like a real finding - and it is why this took
+three greps rather than one:
+
+```
+$ strings assets/libs/armeabi-v7a/libunity.so | grep -i splash
+UnitySplash.png  UnitySplash2.png  UnitySplash3.png  UnitySplashBack.png
+$ grep -c splash classes.dex-strings        # Java host
+1     # "splash_mode", the settings key, and nothing else
+```
+
+Those four are Unity's own watermark resources. **Neither the engine nor the Java host references
+`splash.png` at all**, and `settings.xml`'s `splash_mode=1` is only the scaling policy for a splash
+somebody else draws. That matches the measurement exactly: 0 draw calls during load. There was never
+a draw to reveal, so the previous session's extra presents could not have worked.
+
+On Android the load is covered by the Activity's own window. We have no Activity - so the host draws
+it, which is the right division of labour anyway: **the splash is the window's job, and here we are
+the window.**
+
+## What it costs: one texture and one bind
+
+The rotated present quad in `compat/fbo_es2.c` already exists, so the splash rides it and gets the
+portrait rotation for free. The whole feature is:
+
+- `splash_load()` at the end of `apkenv_fbo_es2_ensure()` - uploads a raw RGB image named by
+  `APKENV_SPLASH_RGB` (size from `APKENV_SPLASH_SIZE`, defaulting to the FBO's).
+- one line in the present: bind the splash texture instead of the FBO texture while it is showing.
+- **handover is self-timing**: show while `apkenv_gl_draws == 0`, retire on the first present after
+  the engine draws, and free the texture. No duration to tune - a slower device just holds it
+  longer.
+- two `global->platform->update()` calls in `modules/unity.c` immediately before `unityAndroidInit`.
+
+That last one is the part that actually matters. `unityAndroidInit` blocks for seconds and **nothing
+presents while it runs**, so the panel holds the last swapped buffer for the entire load - which is
+precisely why a black screen sat there, and precisely why one swap fixes it. Present *twice*: with
+double buffering a single swap leaves the other buffer black for whatever swaps next.
+
+## The asset: raw RGB at package time
+
+`tools/tr2-extract-splash.sh` decodes `splash.png` to raw RGB24 into `packaging/extras/templerun2/`,
+same trade as the music PCM - apkenv links no image decoder, and the file arrives pre-scaled for
+this panel. 768x1024x3 = 2359296 bytes.
+
+Two conventions, both invisible until it renders wrong:
+
+- **Bottom row first.** GL's texture origin is bottom-left, so texel row 0 is the bottom of the
+  image; ffmpeg writes top-down, hence `vflip`. Verify by round-tripping the raw back through
+  ffmpeg with `vflip` and *looking at it* - it should come out upright.
+- **Portrait at the FBO's size, not the panel's.** It rides the rotated quad, so it is 768x1024 and
+  the present rotates it onto the 1024x768 panel. Do not pre-rotate.
+
+Scaling is `cover` (scale to fill, centre crop): the source is 640x1136 - an iPhone-5-shaped launch
+image - against a 768x1024 target, so ~170 px comes off top and bottom. The art is full-bleed and
+the IMANGI banner stays well inside. `contain` is the other mode if a game's splash has content at
+the edges.
+
+## Device state
+
+`plan/logs/tr2-splash-1.log` (1.4.0) shows the whole sequence in order and no GL errors:
+
+```
+[FBO2] portrait FBO ready 768x1024 id=1 tex=2 rot=1
+[SPLASH] '...-rgb.raw' 768x1024 -> tex=3; showing until the engine's first draw
+[UN] unityAndroidInit(assets/bin/, ...)      <- the long blocking load, splash on screen
+[UN] unityAndroidInit done
+[UN] nativeRender #1 -> 1
+[SPLASH] engine issued its first draw; splash retired
+```
+
+**Not yet verified: how it looks.** The `APKENV_GL_SNAPSHOT=2,3` run that would have captured the
+panel never completed - the device's novacom link dropped mid-run (`novacom -l` empty; the host
+daemon fix is `sudo systemctl restart novacomd`). Orientation and crop are reasoned and checked
+against a round-trip of the raw file, not photographed. If it appears upside down, the `vflip` in
+`tr2-extract-splash.sh` is the single thing to flip.
+
+## Not covered
+
+The splash goes up when the graphics device exists (after `nativeInit` +
+`nativeRecreateGfxState`). Everything before that - linker work, mono bridging, module loading - is
+still black. Showing it earlier means creating GL objects before the engine's device exists, which
+is exactly what produced `GL_OUT_OF_MEMORY` and a flat-colour screen when the FBO was created early
+(see the comment in `modules/unity.c`). Worth attempting only if that opening gap is actually long.

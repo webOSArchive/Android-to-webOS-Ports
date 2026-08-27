@@ -278,6 +278,20 @@ you have found the mechanism - not that you have found the cause.
 - `__builtin_return_address(0)` must be taken in the wrapper itself; inside a helper it reports
   the wrapper, and it silently "works" wherever the helper happens to be inlined.
 
+**Check you are reading the real engine.** Temple Run 2's `lib/armeabi-v7a/libunity.so` is a 43 KB
+**proxy**; the 6.8 MB engine sits inside `assets/libs/armeabi-v7a/`. A `strings | grep` on the proxy
+returns nothing and reads exactly like a finding. Before concluding "the engine never mentions X",
+check the file size against the job it supposedly does.
+
+**Nothing covers the load unless you cover it.** On Android the Activity's window is what the player
+stares at while a game loads; a shim has no Activity, so the panel just holds the last swapped
+buffer — black. Do not go hunting for the engine's own splash path first: for Temple Run 2 neither
+libunity nor the Java host references `splash.png` at all (`splash_mode` in settings.xml is only a
+scaling policy), so a previous session spent a run forcing presents to reveal a draw that was never
+issued. **The splash is the window's job, and the shim is the window** — draw it yourself, ride the
+present path you already have, and retire it on the engine's first draw call (`apkenv_gl_draws`),
+which needs no timer. Decode the image to raw RGB at package time, bottom row first for GL's origin.
+
 **Seeing the screen beats reasoning about it.** `APKENV_GL_SNAPSHOT=<frame>` (glReadPixels -> PPM)
 is the only way to see a GL app on webOS 3.0.5. Bind the WINDOW framebuffer before reading, or a
 render-to-FBO port captures the offscreen target at the wrong width and you get a tiled, skewed

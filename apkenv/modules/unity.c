@@ -969,14 +969,27 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
     }
 
     /* Portrait: take the offscreen FBO now - AFTER the graphics device exists
-     * (nativeInit + nativeRecreateGfxState) and BEFORE unityAndroidInit draws
-     * the splash. Creating it before the device produced GL_OUT_OF_MEMORY and
-     * a flat-colour screen; creating it lazily on the engine's first
-     * glBindFramebuffer(0) let the first frames (the 3D backdrop, unrotated)
-     * go straight to the window. */
+     * (nativeInit + nativeRecreateGfxState) and BEFORE unityAndroidInit.
+     * Creating it before the device produced GL_OUT_OF_MEMORY and a flat-colour
+     * screen; creating it lazily on the engine's first glBindFramebuffer(0) let
+     * the first frames (the 3D backdrop, unrotated) go straight to the window.
+     * (An older comment here said unityAndroidInit "draws the splash". It does
+     * not - the engine never opens splash.png at all; see compat/fbo_es2.c.) */
     if (un_portrait()) {
         GLuint fb = apkenv_fbo_es2_ensure();
         fprintf(stderr, "[UN] portrait FBO bound after device creation: %u\n", fb);
+    }
+
+    /* Put the boot splash on screen before the long blocking init.
+     * unityAndroidInit does not return for seconds and nothing presents while
+     * it runs, so the panel simply holds the last swapped buffer for the whole
+     * load - which is exactly what makes a splash worth drawing here. Present
+     * twice: with double buffering one swap leaves the OTHER buffer black, and
+     * whatever swaps next would flash it. Both are no-ops unless
+     * APKENV_SPLASH_RGB is set. */
+    if (global->platform != NULL && global->platform->update != NULL) {
+        global->platform->update();
+        global->platform->update();
     }
 
     char libdir[512]; snprintf(libdir, sizeof(libdir), "%slib", home);

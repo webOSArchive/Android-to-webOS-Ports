@@ -34,6 +34,8 @@ extern struct ModuleHacks global_module_hacks;
  * driver front-end that owns the live context, not the ES1 one. */
 static struct {
     void (*glGenTextures)(GLsizei, GLuint *);
+    void (*glDeleteTextures)(GLsizei, const GLuint *);
+    void (*glPixelStorei)(GLenum, GLint);
     void (*glBindTexture)(GLenum, GLuint);
     void (*glTexImage2D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
     void (*glTexParameteri)(GLenum, GLenum, GLint);
@@ -96,7 +98,8 @@ es2_resolve(void)
         fprintf(stderr, "[FBO2] libGLESv2.so unavailable: %s\n", dlerror());
         return 0;
     }
-    GET(glGenTextures); GET(glBindTexture); GET(glTexImage2D); GET(glTexParameteri);
+    GET(glGenTextures); GET(glDeleteTextures); GET(glPixelStorei);
+    GET(glBindTexture); GET(glTexImage2D); GET(glTexParameteri);
     GET(glGenRenderbuffers); GET(glBindRenderbuffer); GET(glRenderbufferStorage);
     GET(glGenFramebuffers); GET(glBindFramebuffer); GET(glFramebufferTexture2D);
     GET(glFramebufferRenderbuffer); GET(glCheckFramebufferStatus);
@@ -135,6 +138,91 @@ es2_shader(GLenum type, const char *src)
         return 0;
     }
     return s;
+}
+
+/* ---------------------------------------------------------------------------
+ * Boot splash.
+ *
+ * A game's load is dead time on screen. On Android the Activity's window covers
+ * it; here nothing does, so the panel holds whatever was last swapped - black.
+ *
+ * Do not go looking for the engine's own splash path first. Temple Run 2 ships
+ * assets/bin/Data/splash.png and its settings.xml sets splash_mode=1, which
+ * reads like the engine draws it - but the real libunity (the 6.8 MB one inside
+ * assets/libs/, NOT the 43 KB proxy in lib/) contains no "splash" string beyond
+ * its own UnitySplash*.png watermarks, and the Java host references only the
+ * settings key. The engine never opens that file. A previous session spent a
+ * run forcing extra presents around unityAndroidInit trying to reveal a draw
+ * that was never issued.
+ *
+ * So the host draws it, which is the honest division of labour anyway: the
+ * splash is the window's job, and here we are the window. It costs one texture
+ * and one bind, because the rotated present quad already exists - the splash
+ * simply rides it, gaining the portrait rotation for free.
+ *
+ *   APKENV_SPLASH_RGB=<path>   raw RGB24, bottom row FIRST (GL's origin is
+ *                              bottom-left; a top-down file shows upside down)
+ *   APKENV_SPLASH_SIZE=<w>x<h> defaults to the FBO size
+ *
+ * Handover is self-timing: the splash shows while the engine has issued zero
+ * draw calls, and retires on the first present after it draws. No timer to
+ * tune, and a slower device simply holds the splash longer.
+ * ------------------------------------------------------------------------- */
+static GLuint splash_tex;
+static int    splash_showing;
+
+static void
+splash_load(int fbo_w, int fbo_h)
+{
+    const char *path = getenv("APKENV_SPLASH_RGB");
+    const char *size = getenv("APKENV_SPLASH_SIZE");
+    int         w = fbo_w, h = fbo_h;
+    long        want, got;
+    unsigned char *px;
+    FILE       *fp;
+
+    if (path == NULL || path[0] == '\0')
+        return;
+    if (size != NULL && sscanf(size, "%dx%d", &w, &h) != 2) {
+        fprintf(stderr, "[SPLASH] APKENV_SPLASH_SIZE='%s' is not <w>x<h>; ignoring\n", size);
+        w = fbo_w; h = fbo_h;
+    }
+    if (w <= 0 || h <= 0)
+        return;
+    want = (long)w * h * 3;
+
+    fp = fopen(path, "rb");
+    if (fp == NULL) {
+        fprintf(stderr, "[SPLASH] cannot open '%s'\n", path);
+        return;
+    }
+    px = malloc((size_t)want);
+    if (px == NULL) { fclose(fp); return; }
+    got = (long)fread(px, 1, (size_t)want, fp);
+    fclose(fp);
+    if (got != want) {
+        /* Wrong size is the likely mistake (a PNG left undecoded, or a file
+         * built for a different panel), and it would render as garbage. */
+        fprintf(stderr, "[SPLASH] '%s' is %ld bytes, expected %ld for %dx%d RGB; skipping\n",
+                path, got, want, w, h);
+        free(px);
+        return;
+    }
+
+    f.glGenTextures(1, &splash_tex);
+    f.glBindTexture(GL_TEXTURE_2D, splash_tex);
+    f.glPixelStorei(GL_UNPACK_ALIGNMENT, 1);       /* rows are w*3, not padded */
+    f.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, px);
+    f.glPixelStorei(GL_UNPACK_ALIGNMENT, 4);       /* back to the GL default */
+    f.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    f.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    f.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    f.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    free(px);
+
+    splash_showing = 1;
+    fprintf(stderr, "[SPLASH] '%s' %dx%d -> tex=%u; showing until the engine's first draw\n",
+            path, w, h, splash_tex);
 }
 
 /* Create the offscreen portrait target and the blit program. Returns the FBO
@@ -220,6 +308,7 @@ apkenv_fbo_es2_ensure(void)
     es2_ready = 1;
     fprintf(stderr, "[FBO2] portrait FBO ready %dx%d id=%u tex=%u rot=%d\n",
             w, h, fbo_id, fbo_tex, es2_rot);
+    splash_load(w, h);
     /* leave it bound: the engine's fb-0 binds land here */
     return fbo_id;
 }
@@ -301,6 +390,17 @@ apkenv_fbo_es2_present(void)
         f.glGetVertexAttribPointerv(i, GL_VERTEX_ATTRIB_ARRAY_POINTER, &attr[i].ptr);
     }
 
+    /* ---- which texture goes on the quad --------------------------------- */
+    {
+        extern unsigned long apkenv_gl_draws;
+        if (splash_showing && apkenv_gl_draws > 0) {
+            splash_showing = 0;
+            f.glDeleteTextures(1, &splash_tex);
+            splash_tex = 0;
+            fprintf(stderr, "[SPLASH] engine issued its first draw; splash retired\n");
+        }
+    }
+
     /* ---- draw the rotated quad ------------------------------------------ */
     f.glBindFramebuffer(GL_FRAMEBUFFER, 0);
     f.glViewport(0, 0, sw, sh);
@@ -313,7 +413,7 @@ apkenv_fbo_es2_present(void)
     f.glBindBuffer(GL_ARRAY_BUFFER, 0);          /* our pointers are client-side */
     f.glUseProgram(prog);
     f.glActiveTexture(GL_TEXTURE0);
-    f.glBindTexture(GL_TEXTURE_2D, fbo_tex);
+    f.glBindTexture(GL_TEXTURE_2D, splash_showing ? splash_tex : fbo_tex);
     f.glUniform1i(u_tex, 0);
     f.glEnableVertexAttribArray(0);
     f.glEnableVertexAttribArray(1);
