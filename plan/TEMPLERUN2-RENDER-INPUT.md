@@ -793,11 +793,19 @@ the edges.
 [SPLASH] engine issued its first draw; splash retired
 ```
 
-**Not yet verified: how it looks.** The `APKENV_GL_SNAPSHOT=2,3` run that would have captured the
-panel never completed - the device's novacom link dropped mid-run (`novacom -l` empty; the host
-daemon fix is `sudo systemctl restart novacomd`). Orientation and crop are reasoned and checked
-against a round-trip of the raw file, not photographed. If it appears upside down, the `vflip` in
-`tr2-extract-splash.sh` is the single thing to flip.
+**Confirmed on the panel too.** User-confirmed visible on 1.4.0, and `APKENV_GL_SNAPSHOT=2,3`
+captured frame 2 off the device: the 1024x768 landscape framebuffer holds the splash rotated 90
+degrees, upright and full-bleed once the compositor turns the card - i.e. identical treatment to
+every game frame. (The capture is game art, so it stays out of the repo; regenerate by adding
+`APKENV_GL_SNAPSHOT=2,3` to `apkenv.env`, packaging, running, and
+`novacom get file:///media/internal/apkenv-snap-2.ppm`.)
+
+Worth knowing for the next one: the snapshot frame numbers count `webos_update()` calls, and the
+two presents kicked before `unityAndroidInit` are frames 1 and 2 - which is why `=2` lands exactly
+on the splash and nothing else.
+
+If a future splash ever appears upside down, the `vflip` in `tr2-extract-splash.sh` is the single
+thing to flip.
 
 ## Not covered
 

@@ -23,8 +23,9 @@ holds the last swapped buffer — hence two `platform->update()` calls before it
 leaves the other buffer black). `tools/tr2-extract-splash.sh` builds the raw image; it must be
 bottom-row-first (GL origin) and portrait at the FBO size, not pre-rotated.
 
-Sequence confirmed on device, `../plan/logs/tr2-splash-1.log`. **How it looks is not yet
-confirmed** — the snapshot run died with the novacom link.
+Confirmed on device: sequence in `../plan/logs/tr2-splash-1.log`, user-confirmed visible, and an
+`APKENV_GL_SNAPSHOT=2,3` capture of the panel shows it upright and full-bleed. The two kicked
+presents are `webos_update()` frames 1 and 2, so `=2` lands exactly on the splash.
 
 
 ## ⭐ 2026-08-27 (latest) — Temple Run 2 has MUSIC: a PCM bed mixed into the FMOD pump
