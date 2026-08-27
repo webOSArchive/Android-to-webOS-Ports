@@ -11,6 +11,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <errno.h>
 
 /* org.fmod.FMODAudioDevice fmodGetInfo() selectors (from the decompiled glue) */
 #define FMOD_INFO_SAMPLERATE      0
@@ -32,6 +33,43 @@ static jobject        g_thiz;     /* FMOD ignores it (uses a global System) */
 static volatile int   g_running;
 static int            g_started;
 static pthread_t      g_thread;
+
+static int
+pcm_read_loop(FILE *file, void *buffer, int bytes)
+{
+    unsigned char *dst = buffer;
+    int done = 0;
+    int empty_rewinds = 0;
+
+    while (done < bytes) {
+        size_t n = fread(dst + done, 1, (size_t)(bytes - done), file);
+        if (n > 0) {
+            done += (int)n;
+            empty_rewinds = 0;
+            continue;
+        }
+        if (ferror(file))
+            return 0;
+        if (++empty_rewinds > 1)
+            return 0;
+        clearerr(file);
+        if (fseek(file, 0, SEEK_SET) != 0)
+            return 0;
+    }
+    return 1;
+}
+
+static void
+pcm_mix_s16(short *dst, const short *src, int samples, int gain_q15)
+{
+    int i;
+    for (i = 0; i < samples; i++) {
+        int mixed = (int)dst[i] + ((int)src[i] * gain_q15) / 32768;
+        if (mixed > 32767) mixed = 32767;
+        else if (mixed < -32768) mixed = -32768;
+        dst[i] = (short)mixed;
+    }
+}
 
 /* The decompiled FMODAudioDevice.run(), in C. */
 
@@ -80,10 +118,44 @@ fmod_pump_thread(void *arg)
     int         chunk_bytes = 0;
     int         initialised = 0;
     const int   meter = (getenv("APKENV_AUDIO_METER") != NULL);
+    const char *music_path = getenv("APKENV_FMOD_MUSIC_PCM");
+    FILE       *music = NULL;
+    void       *music_chunk = NULL;
+    int         music_gain = 16384;     /* 0.5 in Q15 */
     int         meter_peak = 0, meter_chunks = 0;
     const int   meter_every = 90;      /* ~2 s at 512-frame chunks / 24 kHz */
 
     (void)arg;
+
+    if (music_path != NULL && music_path[0] != '\0') {
+        const char *gain = getenv("APKENV_FMOD_MUSIC_GAIN");
+        if (gain != NULL) {
+            char *end = NULL;
+            double value = strtod(gain, &end);
+            if (end != gain && value == value) {
+                if (value < 0.0) value = 0.0;
+                if (value > 1.0) value = 1.0;
+                music_gain = (int)(value * 32768.0);
+            }
+        }
+        music = fopen(music_path, "rb");
+        if (music != NULL) {
+            long size = -1;
+            if (fseek(music, 0, SEEK_END) == 0) size = ftell(music);
+            if (size <= 0 || (size & 3) != 0 || fseek(music, 0, SEEK_SET) != 0) {
+                fprintf(stderr, "[FMOD-MUSIC] invalid stereo S16 PCM size %ld; disabling\n",
+                        size);
+                fclose(music);
+                music = NULL;
+            } else {
+                fprintf(stderr, "[FMOD-MUSIC] fallback '%s' bytes=%ld gain=%.2f\n",
+                        music_path, size, (double)music_gain / 32768.0);
+            }
+        } else {
+            fprintf(stderr, "[FMOD-MUSIC] cannot open fallback '%s': %s\n",
+                    music_path, strerror(errno));
+        }
+    }
 
     while (g_running) {
         if (!initialised) {
@@ -108,10 +180,17 @@ fmod_pump_thread(void *arg)
 
                 free(chunk);
                 chunk = calloc(1, chunk_bytes);
+                free(music_chunk);
+                music_chunk = music != NULL ? malloc(chunk_bytes) : NULL;
                 if (chunk == NULL) {
                     fprintf(stderr, "[FMOD] chunk alloc failed (%d bytes)\n", chunk_bytes);
                     usleep(100000);
                     continue;
+                }
+                if (music != NULL && music_chunk == NULL) {
+                    fprintf(stderr, "[FMOD-MUSIC] chunk alloc failed; disabling fallback\n");
+                    fclose(music);
+                    music = NULL;
                 }
                 if (bb) free(bb);   /* fake DirectByteBuffer; free the previous one */
                 bb = (*env)->NewDirectByteBuffer(env, chunk, chunk_bytes);
@@ -133,6 +212,16 @@ fmod_pump_thread(void *arg)
         } else {
             if (f_getinfo(env, g_thiz, FMOD_INFO_MIXERRUNNING) == 1) {
                 f_process(env, g_thiz, bb);                 /* fill chunk */
+
+                if (music != NULL && music_chunk != NULL) {
+                    if (pcm_read_loop(music, music_chunk, chunk_bytes))
+                        pcm_mix_s16(chunk, music_chunk, chunk_bytes / 2, music_gain);
+                    else {
+                        fprintf(stderr, "[FMOD-MUSIC] fallback read failed; disabling\n");
+                        fclose(music);
+                        music = NULL;
+                    }
+                }
 
                 /* Output level meter (APKENV_AUDIO_METER=1). This is the one
                  * place that sees exactly what FMOD's mixer produced, which
@@ -168,7 +257,9 @@ fmod_pump_thread(void *arg)
     }
 
     if (track) apkenv_audiotrack_release(track);
+    if (music) fclose(music);
     if (bb) free(bb);
+    free(music_chunk);
     free(chunk);
     return NULL;
 }

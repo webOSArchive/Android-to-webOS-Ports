@@ -28,18 +28,25 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
   icon with audio, centered letterbox; `apkenv/packaging/out/com.apkenv.pvzhd_1.0.1_all.ipk`.
   Full trail: `plan/PVZ-HD-menu-freeze.md`. Module: `apkenv/modules/marmalade.c`.
 
-- **Temple Run 2 (Unity 3.5 + Mono) — RELEASED 1.3.0 (2026-08-27), music open.**
-  `apkenv/packaging/out/com.apkenv.templerun2_1.3.0_all.ipk`: launcher icon, **portrait** (ES2
+- **Temple Run 2 (Unity 3.5 + Mono) — RELEASED 1.3.8 (2026-08-27), music working.**
+  `apkenv/packaging/out/com.apkenv.templerun2_1.3.8_all.ipk`: launcher icon, **portrait** (ES2
   render-to-FBO rotated present, `apkenv/compat/fbo_es2.c`), touch menus, swipe, tilt steering
   (PDL sensors — apkenv's SDL-joystick accelerometer never worked on webOS), textured 3D on
-  Unity's own GLES2 device, sound effects. **No music** — the stream is primed (64 KB) and its
-  channel never consumes; full evidence + the two conclusions that turned out wrong in
-  `plan/TEMPLERUN2-RENDER-INPUT.md`. Also no splash screen.
+  Unity's own GLES2 device, sound effects, and music. Unity's native FMOD stream still stalls after
+  priming; the safe workaround decodes the game's 60-second MP3 to 24000 Hz stereo S16 at package
+  time and mixes it into the existing FMOD AudioTrack pump. The PCM is bundled under
+  `android/extras/`; full evidence and packaging instructions: `plan/TEMPLERUN2-RENDER-INPUT.md`.
+  Also no splash screen.
   **The lesson worth carrying:** `nativeInit(II)` is `(glesMode, splashMode)`, NOT
   `(width, height)` — passing the size made the engine pick its fixed-function renderer and skip
   the splash, and cost a session of disassembly. See `PORTING-PLAYBOOK.md`.
-  Tools: `apkenv/tools/tr2-run.sh`, `tools/ildump.py`, `APKENV_GL_SNAPSHOT`, `APKENV_THREAD_SAMPLE`,
-  `APKENV_TRACE_SEEK_RANGE`, `APKENV_AUDIO_METER`, `APKENV_GL_DEBUG`.
+  Regenerate the music PCM with `apkenv/tools/tr2-extract-music.sh` (the `.resS` is **two
+  concatenated MP3s**; it splits at `0xe4800` and md5-checks the result) and package with
+  `EXTRAS=packaging/extras/templerun2`. That dir is gitignored and is the only surviving copy —
+  `build-ipk.sh` wipes `packaging/stage/` on every run.
+  Tools: `apkenv/tools/tr2-run.sh`, `apkenv/tools/tr2-extract-music.sh`, `tools/ildump.py`,
+  `APKENV_GL_SNAPSHOT`, `APKENV_THREAD_SAMPLE`, `APKENV_TRACE_SEEK_RANGE`, `APKENV_AUDIO_METER`,
+  `APKENV_FMOD_MUSIC_PCM`, `APKENV_GL_DEBUG`.
 
 ## Where's My Water? (first port)
 - **Playable end-to-end with audio**, ships as `com.apkenv.wheresmywater` `.ipk` (launcher icon). Portrait via render-to-FBO; FMOD audio pump. Full writeup: `android-port-shim.md`, `apkenv/BUILD-STATE.md`, `plan/STAGE-*.md`.

@@ -1,5 +1,27 @@
 # apkenv webOS port — BUILD STATE (persistent; do NOT keep this only in chat/scratch)
 
+## ⭐ 2026-08-27 (latest) — Temple Run 2 has MUSIC: a PCM bed mixed into the FMOD pump
+
+`com.apkenv.templerun2` **1.3.8** ships with music. Unity's own native FMOD stream is still stuck
+(primed 64 KB, channel never consumes) and must be left alone — inline-hooking libunity's FMOD
+internals crashed the device. Instead `audio/fmod_pump.c` gained an optional PCM bed, mixed in
+after `fmodProcess()` and before the ring write:
+
+- Gated entirely by **`APKENV_FMOD_MUSIC_PCM`** (+ `APKENV_FMOD_MUSIC_GAIN`, 0..1) — no other game
+  changes behaviour. Input must be raw LE stereo S16 **at FMOD's own output rate** (24000 Hz here);
+  the pump does no resampling. Looping reader, Q15 clipped mix, self-disabling on any failure.
+- `packaging/build-ipk.sh` gained **`EXTRAS=<dir>`** → shipped as `android/extras/` in the .ipk, so
+  the env path is relative and nothing has to be side-loaded.
+- The asset is the trap: `assets/bin/Data/sharedassets0.assets.resS` is **two concatenated MP3s**
+  with no container; decode it whole and you get both back to back. Split at `0xe4800`.
+  `tools/tr2-extract-music.sh` extracts, splits, decodes and md5-checks it into
+  `packaging/extras/templerun2/` (gitignored — copyrighted game audio, regenerate from your apk).
+  **Never leave the only copy in `packaging/stage/`; `build-ipk.sh` starts with `rm -rf $STAGE`.**
+
+Device evidence + limits (it loops, and ignores the game's music setting):
+`../plan/TEMPLERUN2-RENDER-INPUT.md` "Music fallback".
+
+
 ## ⭐ 2026-08-27 (later) — Temple Run 2 RENDERS: title screen + menu, installed as an .ipk
 
 `com.apkenv.templerun2` v0.1.2 installs and launches from the icon. Boots, loads all

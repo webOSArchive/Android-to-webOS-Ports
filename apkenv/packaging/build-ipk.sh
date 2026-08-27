@@ -26,6 +26,7 @@
 #   DATA=<dir>      extracted resource tree, shipped as android/<apk>.data/ and
 #                   seeded into /media/internal/.apkenv/<apk>/ on first launch
 #   ENVFILE=<file>  KEY=VALUE launch settings, shipped as android/apkenv.env
+#   EXTRAS=<dir>    additional runtime files, shipped under android/extras/
 #   APPINFO, ICON, README   overrides (see below)
 #
 # Usage: packaging/build-ipk.sh [path-to-bionic-libs-dir]
@@ -64,6 +65,13 @@ if [ -f "$APK" ]; then
 else
     echo "WARNING: game apk '$APK' not found — the .ipk will not be self-contained."
     echo "         The binary will fall back to APKENV_DEFAULT_APK on /media/internal."
+fi
+
+if [ -n "${EXTRAS:-}" ] && [ -d "$EXTRAS" ]; then
+    mkdir -p "$STAGE/android/extras"
+    cp -r "$EXTRAS"/. "$STAGE/android/extras/"
+    echo "bundled extras from $EXTRAS:"
+    ls -la "$STAGE/android/extras/" | tail -n +2
 fi
 
 # Launcher icon: extract the largest available app icon from the game apk at

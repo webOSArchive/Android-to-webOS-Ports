@@ -16,6 +16,7 @@ wmw-patch/
 # packaging build artifacts + copyrighted game icon
 packaging/out/
 packaging/stage/
+packaging/extras/
 packaging/staging-libs/
 packaging/.icontmp/
 packaging/webos/icon.png

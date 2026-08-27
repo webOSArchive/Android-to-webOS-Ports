@@ -588,3 +588,81 @@ churn: probe, deploy, read, repeat, without a hypothesis sharp enough to falsify
 user called it, correctly. When a run stops changing what the user can see or hear, stop and say
 so rather than deploying again.
 
+---
+
+# Music fallback (2026-08-27) - audible on device, shipped in 1.3.8
+
+The native Unity/FMOD stream remains unresolved. Two non-invasive lifecycle tests ruled out late
+AudioTrack startup and the channel's initial paused state. Do not patch or inline-hook libunity's
+FMOD internals on the TouchPad: those experiments caused system crashes, and bypassing the
+`stream+0x60` worker gate is specifically unsafe.
+
+## What ships
+
+The shipped workaround mixes the game's own music into the known-good FMOD AudioTrack output in
+`audio/fmod_pump.c`, after `fmodProcess()` and before the ring-buffer write. It is enabled only by
+`APKENV_FMOD_MUSIC_PCM`, so every other game is unchanged. Input is raw little-endian stereo S16 at
+FMOD's measured 24000 Hz - the pump does **no** resampling and mixes straight into FMOD's own chunk
+buffer, so a file at any other rate or layout plays back at the wrong speed. `APKENV_FMOD_MUSIC_GAIN`
+is clamped to 0..1 (Temple Run 2 ships 0.5). The reader loops the file (`pcm_read_loop` rewinds on
+EOF, and gives up after one empty rewind so a truncated file cannot spin); the mixer
+(`pcm_mix_s16`) is a Q15 add with clipping. Any read or alloc failure just disables the fallback
+and leaves FMOD's own output intact.
+
+## Getting the PCM: the asset is two MP3s in a trenchcoat
+
+`assets/bin/Data/sharedassets0.assets.resS` (1277793 bytes, STORED in the apk at
+`0x1cfd7f8..0x1e35759`) is two **concatenated** 44.1 kHz stereo MP3s with no container - Unity keeps
+only the offsets/lengths, over in `sharedassets0.assets`. Split at `0xe4800`: track 1 is
+935936 bytes / 60.08 s (the in-game music, the one we ship) and track 2 is 341857 bytes / 23.47 s.
+Decoding the whole `.resS` in one pass silently concatenates both tracks - the split is the
+non-obvious step.
+
+`apkenv/tools/tr2-extract-music.sh` does all of it and verifies the result:
+
+```
+apkenv/tools/tr2-extract-music.sh [templerun2.apk] [out-dir]
+    # default: packaging/templerun2.apk -> packaging/extras/templerun2/
+    # -> templerun2-game-24000-s16le.pcm, 5765328 bytes,
+    #    md5 988d1789aedd4b84c01b83670eafa959
+```
+
+Then package with `EXTRAS=` (build-ipk.sh copies the directory to `android/extras/` in the .ipk):
+
+```
+APPID=com.apkenv.templerun2 APK=packaging/templerun2.apk \
+APPINFO=packaging/templerun2/appinfo.json ENVFILE=packaging/templerun2/apkenv.env \
+HOSTLIBS=hostlibs/webos EXTRAS=packaging/extras/templerun2 ./packaging/build-ipk.sh
+```
+
+`packaging/templerun2/apkenv.env` already carries the two settings, with the path relative to the
+app directory apkenv `chdir`s into:
+
+```
+APKENV_FMOD_MUSIC_PCM=android/extras/templerun2-game-24000-s16le.pcm
+APKENV_FMOD_MUSIC_GAIN=0.5
+```
+
+**Do not leave the only copy of the PCM in `packaging/stage/`** - `build-ipk.sh` starts with
+`rm -rf "$STAGE"`, so the next package of *any* build destroys it. It lives in
+`packaging/extras/templerun2/`, which is gitignored along with every other `packaging/extras/`
+payload: it is copyrighted game audio, regenerate it from your own apk.
+
+## Device evidence
+
+The output meter (`APKENV_AUDIO_METER=1`) is what separates "engine never started the music" from
+"the pump never delivered it": before the fallback it read a flat `peak=0` at the menu.
+
+- `plan/logs/tr2-pcm-fallback-1.log` - 1.3.7, PCM side-loaded to `/media/internal/` with the env
+  pointing at the absolute path. `[FMOD-MUSIC] fallback ... bytes=5765328 gain=0.50`, then
+  `[FMOD-METER] peak=5523/32767` and up while sitting on the menu. User-confirmed audible.
+- `plan/logs/tr2-pcm-fallback-self-contained.log` - 1.3.8, the shipped build: PCM bundled in the
+  .ipk, env path relative, `[FMOD-MUSIC] fallback 'android/extras/...' bytes=5765328 gain=0.50`.
+  Nothing to side-load.
+
+## Known limits
+
+The fallback loops the game track whenever FMOD's mixer is running, rather than following Unity's
+per-scene music source: it does not stop or change with the scene, and it does not respond to the
+game's own music volume setting. It is a fixed bed under the (working) native sound effects. Fixing
+the native stream properly would replace it - the env var is the whole switch.

@@ -30,6 +30,9 @@ SDL_*.png
 **/packaging/out/
 **/packaging/stage/
 **/packaging/*.apk
+# Per-game EXTRAS= payloads (decoded game audio etc.) — regenerate from your own
+# apk, e.g. apkenv/tools/tr2-extract-music.sh
+**/packaging/extras/
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Proprietary / device-harvested binaries — NOT committed.
