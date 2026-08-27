@@ -58,6 +58,11 @@ Traced Mono call order from libunity: `mono_file_map_override`, `mono_register_m
 
 ## Recommended path: port Mono natively (decided 2026-08-26 evening)
 
+> **2026-08-27 update:** step 1 below was done — the fast-TLS theory is **refuted** (0 `mrc p15` TLS
+> reads, 0 kuser-helper literals in `libmono.so`; `mono_pthread_key_for_tls` is a dead table lookup).
+> The decision stands on the other grounds. The detailed, checkpointed execution plan is
+> **`plan/TEMPLERUN2-MONO.md`** (version pinned: Mono 2.6.5, `Unity-Technologies/mono` branch `unity3.5`).
+
 Why the bionic `libmono` is the wrong thing to fight: it is the one component that does everything
 glibc-hostile at once — signal handlers, thread attach, Boehm GC stack scanning, JIT page mmap/mprotect
 — and **fast TLS**: `libmono` exports `mono_pthread_key_for_tls`, the Android mechanism that lets the

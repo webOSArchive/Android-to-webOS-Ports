@@ -29,7 +29,7 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
   Full trail: `plan/PVZ-HD-menu-freeze.md`. Module: `apkenv/modules/marmalade.c`.
 
 - **Temple Run 2 (Unity 3.5 + Mono) — OPEN, not running.** Dies in Mono init after several general
-  bionic↔glibc ABI fixes (allocator hooks, `sigaction` layout, cleanup handlers). `plan/TEMPLERUN2.md`.
+  bionic↔glibc ABI fixes (allocator hooks, `sigaction` layout, cleanup handlers). `plan/TEMPLERUN2.md`; execution plan for the native-Mono stage: `plan/TEMPLERUN2-MONO.md`.
 
 ## Where's My Water? (first port)
 - **Playable end-to-end with audio**, ships as `com.apkenv.wheresmywater` `.ipk` (launcher icon). Portrait via render-to-FBO; FMOD audio pump. Full writeup: `android-port-shim.md`, `apkenv/BUILD-STATE.md`, `plan/STAGE-*.md`.
