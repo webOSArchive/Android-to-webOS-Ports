@@ -239,6 +239,9 @@ my_glAlphaFunc(GLenum func, GLclampf ref)
 #include <stdio.h>
 #include <stdlib.h>
 #include "etc1.h"
+#include "hooks.h"
+
+void apkenv_glpath_mark(const char *what);
 
 unsigned long gp_draws, gp_verts, gp_draws2, gp_verts2;
 int gp_vp2[4];
@@ -710,6 +713,7 @@ my_glScalef(GLfloat x, GLfloat y, GLfloat z)
 void
 my_glTexEnvf(GLenum target, GLenum pname, GLfloat param)
 {
+    apkenv_glpath_mark("glTexEnvf (ES1 fixed-function path)");
     WRAPPERS_DEBUG_PRINTF("glTexEnvf()\n", target, pname, param);
     functions.glTexEnvf(target, pname, param);
 }
@@ -950,6 +954,7 @@ my_glDisableClientState(GLenum array)
 void
 my_glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
+    apkenv_glpath_mark("glDrawArrays via ES1 wrapper");
     if (gp_enabled()) { gp_draws++; gp_verts += (unsigned long)count; }
 
     WRAPPERS_DEBUG_PRINTF("glDrawArrays(mode=0x%04x, first=%d, count=%d)\n", mode, first, count);
@@ -965,6 +970,7 @@ my_glDrawArrays(GLenum mode, GLint first, GLsizei count)
 void
 my_glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
 {
+    apkenv_glpath_mark("glDrawElements via ES1 wrapper");
     if (gp_enabled()) { gp_draws++; gp_verts += (unsigned long)count; }
 
     WRAPPERS_DEBUG_PRINTF("glDrawElements(%d, %d, %d, %p)\n", mode, count, type, indices);
@@ -979,6 +985,7 @@ my_glEnable(GLenum cap)
 void
 my_glEnableClientState(GLenum array)
 {
+    apkenv_glpath_mark("glEnableClientState (ES1 fixed-function path)");
     WRAPPERS_DEBUG_PRINTF("glEnableClientState(0x%x)\n", array);
     functions.glEnableClientState(array);
 }
@@ -1087,8 +1094,54 @@ my_glGetPointerv(GLenum pname, void **params)
 const GLubyte *
 my_glGetString(GLenum name)
 {
+    const GLubyte *r;
     WRAPPERS_DEBUG_PRINTF("glGetString(%d)\n", name);
-    return functions.glGetString(name);
+
+    /* THE renderer-selection bug. An engine that carries both renderers asks
+     * the device what it is and believes the answer. libunity binds glGetString
+     * from libGLES_CM (ES1 comes first in DT_NEEDED), and that front-end reports
+     * its own static identity - "OpenGL ES-CM 1.1" - even when the context that
+     * is actually current is ES2. Unity therefore built its fixed-function
+     * device and drew every ES2-only shader with the magenta error material.
+     *
+     * Answer from the front-end that owns the LIVE context instead. This is not
+     * a spoof: with an ES2 context current, libGLESv2's answer is the true one. */
+    if (apkenv_active_gles_version() == 2) {
+        static const GLubyte *(*es2_getstring)(GLenum);
+        static int resolved;
+        if (!resolved) {
+            void *h = dlopen("libGLESv2.so", RTLD_LAZY | RTLD_NOLOAD);
+            if (h == NULL) h = dlopen("libGLESv2.so", RTLD_LAZY);
+            if (h != NULL) *(void **)&es2_getstring = dlsym(h, "glGetString");
+            resolved = 1;
+            fprintf(stderr, "[GLSTR] live context is ES2; answering glGetString "
+                            "from libGLESv2 (%p)\n", (void *)es2_getstring);
+        }
+        if (es2_getstring != NULL) {
+            r = es2_getstring(name);
+            {
+                static GLenum seen[8]; static int n; int i;
+                for (i = 0; i < n; i++) if (seen[i] == name) return r;
+                if (n < 8) seen[n++] = name;
+                fprintf(stderr, "[GLSTR es1->es2] 0x%x -> %s\n", (unsigned)name,
+                        r ? (const char *)r : "(null)");
+            }
+            return r;
+        }
+    }
+
+    r = functions.glGetString(name);
+    /* What the engine believes about the device decides which renderer it
+     * builds, so record the answer it actually gets - through THIS front-end
+     * (libGLES_CM), which may differ from the ES2 one on the same context. */
+    {
+        static GLenum seen[8]; static int n; int i;
+        for (i = 0; i < n; i++) if (seen[i] == name) return r;
+        if (n < 8) seen[n++] = name;
+        fprintf(stderr, "[GLSTR es1] 0x%x -> %s\n", (unsigned)name,
+                r ? (const char *)r : "(null)");
+    }
+    return r;
 }
 void
 my_glGetTexEnviv(GLenum env, GLenum pname, GLint *params)
@@ -1216,6 +1269,7 @@ my_glMaterialxv(GLenum face, GLenum pname, const GLfixed *params)
 void
 my_glMatrixMode(GLenum mode)
 {
+    apkenv_glpath_mark("glMatrixMode (ES1 fixed-function path)");
     WRAPPERS_DEBUG_PRINTF("glMatrixMode(mode=0x%04x)\n", mode);
     matrix_mode = mode;
     functions.glMatrixMode(mode);

@@ -157,3 +157,112 @@ black when gameplay loads" = memory quota), audio verification, Chartboost/promo
   the order.
 - **Do not fake a device answer and then trust the engine's reaction to it as evidence.**
   `setOrientation(0)` was our own `getOrientation()=0` coming back.
+
+---
+
+# EXECUTION LOG (2026-08-27, session 2) - what is now fixed and what is not
+
+## Stage T - DONE (user-confirmed on device)
+`nativeTouch`'s trailing int is the MotionEvent SOURCE; we passed 0, the real host
+passes `0x1002` (SOURCE_TOUCHSCREEN, hard-coded in `UnityPlayer.onTouchEvent`).
+With that plus a monotonic `eventTime` (`CLOCK_MONOTONIC`, Android's
+`uptimeMillis()` base), **the menu responds to taps**. `[UN-TOUCH]` lines log every
+DOWN/UP with pixel coords (`plan/logs/tr2-packaged-5.log`: DOWN 538,505 -> MOVE -> UP).
+Package 0.1.3.
+
+## Stage G - the ES2 context is REAL now (and the old "never retry ES2" note was wrong)
+1. **G1 (passive EGL interposition) paid for itself immediately.** apkenv is linked
+   `-rdynamic -lEGL`, so `eglChooseConfig`/`eglCreateContext`/`eglCreateWindowSurface`
+   defined in the executable win over libSDL's calls (`platform/webos_egl_shim.c`).
+   It showed SDL is handed config id 5 - `[ES1][ES2]`, WINDOW, rgba 8/8/8/8, depth 16,
+   caveat EGL_NONE - and `eglCreateContext(CLIENT_VERSION=2)` still returns
+   `EGL_BAD_ALLOC`. **Both planned fixes (filter/choose a better config) were dead on
+   arrival; only the measurement told us that.**
+2. **`tools/egl2test.c` + `tools/egl2-device-run.sh`** (raw EGL / +PDL / +SDL-ES1-current)
+   create ES2 contexts on **27/27 configs in every state**. So: not the driver, not the
+   jail, not PDL, not SDL owning the display.
+3. **Root cause: the FIRST context in the process must be ES1.** Creating ES2 first
+   returns BAD_ALLOC on every config; after one ES1 context has been created (and even
+   destroyed), ES2 succeeds on all of them. egl2test only ever saw success because it
+   tried ES1 before ES2 per config. `apkenv_egl_warmup()` in `platform/webos_egl_shim.c`
+   now does exactly that before SDL asks - always on, `APKENV_EGL_WARMUP=0` to disable.
+   Result: `webos_init: surface 1024x768, gles_version=2`, no debug flags.
+   **This is general apkenv/webOS infrastructure - any ES2 engine benefits.**
+4. **Hook-table precedence is now context-driven** (`compat/hooks.c`): the ~68 names
+   GLES1 and GLES2 share are re-pointed at the table matching the LIVE context via
+   `apkenv_set_active_gles_version()`, called from `webos_init` after the context
+   exists (registration happens earlier, so the first choice is a guess).
+   Log: `GLES: re-pointed 68 shared symbols at the ES2 wrappers`.
+5. ETC1 decode added to the ES2 wrapper too (it is one of the shared names).
+6. Shader compile/link failures now report the driver's own message (`[GLSL]`),
+   with the offending GLSL cached from `glShaderSource`.
+
+## The frame grab - stop guessing what the screen looks like
+`APKENV_GL_SNAPSHOT=<frame>[,<frame>]` makes `webos_update()` `glReadPixels` the back
+buffer before the swap and write `/media/internal/apkenv-snap-<n>.ppm` (`platform/webos.c`).
+`glReadPixels` is resolved from the library that owns the live context. There is no
+screenshot tool for a GL app on webOS 3.0.5, and `/dev/fb0` does not hold the
+accelerated layer, so this is the only way to see the render from the workstation.
+(webOS's built-in screenshot writes to `/media/internal/screencaptures` and is worth a
+try for non-GL cases.) It works: `plan/logs/` + the PNGs show the title screen exactly.
+
+## Device loop, self-serve
+`tools/tr2-run.sh [logname]` = kill -> install -> launch -> wait -> pull log.
+**`palm-launch` on an already-running app only refocuses it**; the old process keeps
+writing the log, so you pull the PREVIOUS build's output while `md5sum` says the new
+binary is installed. `killall` via novacom reports "unexpected EOF from server" and does
+not always take - `pidof` + `kill -9` does. This cost two confusing runs.
+
+## THE OPEN PROBLEM, now precisely located
+**Unity builds its fixed-function ES1 graphics device even though the live context is ES2.**
+Measured with one-shot markers in BOTH wrapper tables (`[GLPATH]`): first
+`glMatrixMode`, `glTexEnvf`, `glEnableClientState`, and draws through the ES1 wrapper.
+`glCreateShader` is **never** called. So the magenta is Unity's error material for the
+8 shaders that ship ES2-only subprograms - exactly as predicted - and the fix is to make
+Unity build its GLES20 device, not anything about textures.
+
+What has been ruled out by measurement (do not redo):
+- **It is not the config, the driver, the jail, PDL or SDL** (see G1-G3 above).
+- **It is not `GL_VERSION`.** libunity binds `glGetString` from the ES1 front-end, which
+  reports its own static identity `OpenGL ES-CM 1.1` even with an ES2 context current.
+  `my_glGetString` now answers from libGLESv2 when the live context is ES2
+  (`OpenGL ES 2.0 1566933`, plus the ES2 extension string) - **and Unity still builds ES1.**
+- **It is not entry-point probing.** libunity calls `eglGetProcAddress` exactly twice, for
+  `eglGetSystemTimeFrequencyNV`/`eglGetSystemTimeNV`. It binds GL statically via DT_NEEDED,
+  and those bind fine (no linker errors, no `GLES2 dlsym MISS`).
+- **It is not the missing `nativeRecreateGfxState`.** That call (from `onSurfaceCreated`,
+  the real host's device-creation point) is now made before `unityAndroidInit`
+  (`modules/unity.c`); it runs clean and changes nothing.
+- **Java `gles_mode` never reaches native.** `UnityPlayer.init(I,Z)` passes it only to the
+  GLSurfaceView subclass (`UnityPlayer$23`/`u`), which uses it for the EGL context version.
+  `nativeSetExtras(Bundle)` carries the *intent* extras, not settings.xml.
+
+### Ranked next steps
+1. **Find the branch statically.** `libunity` contains both "Creating OpenGLES1.x graphics
+   device" (0x6136e4) and "Creating OpenGLES2.0 graphics device" (0x614c70) and prints
+   neither (apkenv's liblog wrapper does not filter, so nothing is being swallowed).
+   The lib is PIC, so the string addresses never appear as literals - a naive
+   4-byte-xref scan finds nothing and a hand-rolled `add rX, pc` filter got it wrong.
+   Use a real disassembler: `pip3 install --break-system-packages capstone`
+   (`webos://knowledge/system-internals` recommends it for exactly this), find the two
+   xrefs, and read the condition above them. That condition names the input we are
+   answering wrongly, which is the whole answer.
+2. **PlayerSettings, not settings.xml.** Unity's `targetGlesGraphics` lives in
+   `assets/bin/Data/mainData`/`globalgamemanagers`, which libunity reads during
+   `unityAndroidInit` - a plausible source for the choice. UnityPy (not installed here)
+   or a hand parse would confirm what it says.
+3. **Force the issue as a test, not a fix:** make the ES1 fixed-function entry points
+   fail/absent so the engine cannot build that device, and see whether it takes the ES2
+   path and what it then asks for. Diagnostic only.
+4. If Unity's ES2 device is unreachable, the fallback is to accept fixed-function and
+   patch the 8 ES2-only shaders' materials - much worse, and only if 1-3 dead-end.
+
+## A correction to an earlier "settled" fact
+The Adreno 220 **does** advertise `GL_OES_compressed_ETC1_RGB8_texture` - on BOTH the ES1
+and ES2 extension strings (logged in full in `plan/logs/tr2-es2-7.log` /
+`tr2-es2-8.log`). The previous session concluded it does not and wrote a CPU ETC1
+decoder. The decoder is correct and unit-tested, but the premise was wrong: the
+"GL_INVALID_ENUM on every texture" it was built to fix was far more likely the
+duplicate-GLES-hook bug sending uploads to the wrong front-end. Re-test native ETC1
+before assuming the decoder is needed.
+

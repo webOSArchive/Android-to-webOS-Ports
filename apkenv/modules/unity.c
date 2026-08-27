@@ -594,6 +594,10 @@ typedef void (*unity_InitPlayerPrefs_t)(JNIEnv*, jobject p0);
  * against UnityPlayer.smali). */
 typedef void (*unity_nativeResize_t)(JNIEnv*, jobject, jint, jint, jint, jint);
 typedef void (*unity_nativeResume_t)(JNIEnv*, jobject);            /* ()V  */
+/* UnityPlayer.onSurfaceCreated() -> nativeRecreateGfxState(). This is where the
+ * real host builds the graphics device, with the EGL context the Java side just
+ * created already current - i.e. it is the call that decides ES1 vs ES2. */
+typedef void (*unity_nativeRecreateGfxState_t)(JNIEnv*, jobject);  /* ()V  */
 typedef void (*unity_nativeFocusChanged_t)(JNIEnv*, jobject, jboolean); /* (Z)V */
 typedef jboolean (*unity_androidinit_t)(JNIEnv*, jobject p0, jstring p1, jstring p2);
 typedef void (*unity_androidpreparegameloop_t)(JNIEnv*, jobject);
@@ -613,6 +617,7 @@ struct SupportModulePriv {
     unity_InitPlayerPrefs_t InitPlayerPrefs;
     unity_nativeResize_t nativeResize;
     unity_nativeResume_t nativeResume;
+    unity_nativeRecreateGfxState_t nativeRecreateGfxState;
     unity_androidinit_t unityAndroidInit;
     unity_androidpreparegameloop_t unityAndroidPrepareGameLoop;
     unity_nativeTouch_t nativeTouch;
@@ -718,6 +723,7 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
     self->priv->nativeFocusChanged = jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeFocusChanged");
     self->priv->nativeResize = jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeResize");
     self->priv->nativeResume = jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeResume");
+    self->priv->nativeRecreateGfxState = jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeRecreateGfxState");
     fprintf(stderr, "[UN] natives: init=%p file=%p render=%p initJni=%p androidInit=%p prepare=%p touch=%p prefs=%p\n",
             (void*)self->priv->nativeInit, (void*)self->priv->nativeFile, (void*)self->priv->nativeRender,
             (void*)self->priv->initJni, (void*)self->priv->unityAndroidInit, (void*)self->priv->unityAndroidPrepareGameLoop,
@@ -734,6 +740,19 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
     un_screen_w = width; un_screen_h = height;
     un_hookcheck("nativeInit"); fprintf(stderr, "[UN] nativeInit(%d,%d)\n", width, height);
     self->priv->nativeInit(ENV_M,GLOBAL_M,width,height);
+    /* onSurfaceCreated -> nativeRecreateGfxState, which the Java host runs on the
+     * GL thread BEFORE the first onDrawFrame. We had skipped it entirely, and
+     * skipping it is a candidate cause of the engine building its fixed-function
+     * ES1 device while an ES2 context is current (measured: glMatrixMode /
+     * glTexEnvf / glEnableClientState, never glCreateShader). */
+    if (self->priv->nativeRecreateGfxState) {
+        fprintf(stderr, "[UN] nativeRecreateGfxState (onSurfaceCreated)\n");
+        self->priv->nativeRecreateGfxState(ENV_M,GLOBAL_M);
+        fprintf(stderr, "[UN] nativeRecreateGfxState done\n");
+    } else {
+        fprintf(stderr, "[UN] nativeRecreateGfxState NOT FOUND\n");
+    }
+
     char libdir[512]; snprintf(libdir, sizeof(libdir), "%slib", home);
     jstring bin = GLOBAL_M->env->NewStringUTF(ENV_M,"assets/bin/");
     jstring lib = GLOBAL_M->env->NewStringUTF(ENV_M,libdir);

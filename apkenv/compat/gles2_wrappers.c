@@ -6,6 +6,9 @@
 
 #define IN_GLES2_WRAPPERS
 #include "gles2_wrappers.h"
+#include "etc1.h"
+#include <stdlib.h>
+#include <string.h>
 #include <assert.h>
 
 #ifdef APKENV_DEBUG
@@ -450,15 +453,113 @@ my_gles2_glColorMask(GLboolean red, GLboolean green, GLboolean blue, GLboolean a
     WRAPPERS_DEBUG_PRINTF("glColorMask()\n", red, green, blue, alpha);
     functions.glColorMask(red, green, blue, alpha);
 }
+
+/* ---- shader source cache --------------------------------------------------
+ * Keeps the last source string handed to each shader name, so a compile failure
+ * can print the GLSL the driver rejected (Unity generates its shaders at
+ * runtime; there is no file to go and read). Small, bounded, best-effort. */
+#define GLES2_SHADER_SRC_SLOTS 256
+static char *gles2_shader_src[GLES2_SHADER_SRC_SLOTS];
+
+static void
+gles2_shader_src_store(GLuint shader, GLsizei count, const char **string, const GLint *length)
+{
+    unsigned slot = (unsigned)shader % GLES2_SHADER_SRC_SLOTS;
+    size_t total = 0;
+    GLsizei i;
+    char *buf;
+
+    if (string == NULL || count <= 0) return;
+    for (i = 0; i < count; i++) {
+        if (string[i] == NULL) continue;
+        total += (length != NULL && length[i] >= 0) ? (size_t)length[i] : strlen(string[i]);
+    }
+    if (total == 0 || total > 64 * 1024) return;
+    buf = malloc(total + 1);
+    if (buf == NULL) return;
+    buf[0] = 0;
+    {
+        size_t at = 0;
+        for (i = 0; i < count; i++) {
+            size_t n;
+            if (string[i] == NULL) continue;
+            n = (length != NULL && length[i] >= 0) ? (size_t)length[i] : strlen(string[i]);
+            memcpy(buf + at, string[i], n);
+            at += n;
+        }
+        buf[at] = 0;
+    }
+    free(gles2_shader_src[slot]);
+    gles2_shader_src[slot] = buf;
+}
+
+/* ---- renderer-path markers ------------------------------------------------
+ * "Is the engine on the shader path or the fixed-function path?" must be
+ * measured, not inferred: Unity 3.5 ships BOTH renderers in libunity and picks
+ * one at runtime. Log the first use of a few decisive entry points, once each,
+ * from BOTH wrapper tables (probing only one table is what produced a
+ * confidently wrong answer earlier in this port). */
+void apkenv_glpath_mark(const char *what)
+{
+    static const char *seen[16];
+    static int n;
+    int i;
+    for (i = 0; i < n; i++)
+        if (seen[i] == what) return;
+    if (n < 16) seen[n++] = what;
+    fprintf(stderr, "[GLPATH] first %s\n", what);
+}
+
 void
 my_gles2_glCompileShader(GLuint shader)
 {
     WRAPPERS_DEBUG_PRINTF("glCompileShader()\n", shader);
     functions.glCompileShader(shader);
+
+    /* A shader that fails to compile leaves the engine drawing with its error
+     * material - which on Unity is magenta, and looks exactly like a texture
+     * bug. Adreno's GLSL compiler is stricter than the ones these 2013 shaders
+     * shipped against, so report every failure with the driver's own message. */
+    if (functions.glGetShaderiv != NULL) {
+        GLint ok = 1;
+        functions.glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+        if (!ok) {
+            static int reported = 0;
+            char log[1024]; GLsizei len = 0;
+            log[0] = 0;
+            if (functions.glGetShaderInfoLog != NULL)
+                functions.glGetShaderInfoLog(shader, sizeof(log) - 1, &len, log);
+            log[(len > 0 && len < (GLsizei)sizeof(log)) ? len : 0] = 0;
+            fprintf(stderr, "[GLSL] shader %u FAILED to compile: %s\n", shader, log);
+            if (reported++ < 4 && gles2_shader_src[(unsigned)shader % GLES2_SHADER_SRC_SLOTS] != NULL)
+                fprintf(stderr, "[GLSL] source was:\n%s\n",
+                        gles2_shader_src[(unsigned)shader % GLES2_SHADER_SRC_SLOTS]);
+        }
+    }
 }
 void
 my_gles2_glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const void *data)
 {
+    /* Same fix as the ES1 wrapper (gles_wrappers.c): the Adreno 220 does not
+     * expose GL_OES_compressed_ETC1_RGB8_texture on either context, so every
+     * ETC1 upload is rejected with GL_INVALID_ENUM and the geometry draws
+     * untextured. Decode on the CPU and upload RGB8.
+     *
+     * This MUST live in both wrappers: glCompressedTexImage2D is one of the ~68
+     * names the two tables share, so whichever table owns the live context is
+     * the one the engine reaches. */
+#ifndef GL_ETC1_RGB8_OES
+#define GL_ETC1_RGB8_OES 0x8D64
+#endif
+    if (internalformat == GL_ETC1_RGB8_OES && data != NULL && width > 0 && height > 0) {
+        unsigned char *rgb = apkenv_etc1_decode(data, width, height);
+        if (rgb != NULL) {
+            functions.glTexImage2D(target, level, GL_RGB, width, height, border,
+                                   GL_RGB, GL_UNSIGNED_BYTE, rgb);
+            free(rgb);
+            return;
+        }
+    }
     WRAPPERS_DEBUG_PRINTF("glCompressedTexImage2D()\n", target, level, internalformat, width, height, border, imageSize, data);
     functions.glCompressedTexImage2D(target, level, internalformat, width, height, border, imageSize, data);
 }
@@ -489,6 +590,7 @@ my_gles2_glCreateProgram()
 GLuint
 my_gles2_glCreateShader(GLenum type)
 {
+    apkenv_glpath_mark("glCreateShader (ES2 shader path)");
     /* One-shot: which renderer did the engine actually choose? Unity 3.5 links
      * BOTH a fixed-function and a shader renderer; if this fires, it picked the
      * GLES2 one, and on a TouchPad (ES1.1-only through SDL) nothing will draw. */
@@ -584,6 +686,7 @@ my_gles2_glDisableVertexAttribArray(GLuint index)
 void
 my_gles2_glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
+    apkenv_glpath_mark("glDrawArrays via ES2 wrapper");
     if (gp_enabled()) { gp_draws2++; gp_verts2 += (unsigned long)count; }
 
     WRAPPERS_DEBUG_PRINTF("glDrawArrays()\n", mode, first, count);
@@ -592,6 +695,7 @@ my_gles2_glDrawArrays(GLenum mode, GLint first, GLsizei count)
 void
 my_gles2_glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices)
 {
+    apkenv_glpath_mark("glDrawElements via ES2 wrapper");
     if (gp_enabled()) { gp_draws2++; gp_verts2 += (unsigned long)count; }
 
     WRAPPERS_DEBUG_PRINTF("glDrawElements()\n", mode, count, type, indices);
@@ -774,8 +878,17 @@ my_gles2_glGetShaderSource(GLuint shader, GLsizei bufsize, GLsizei *length, char
 const GLubyte *
 my_gles2_glGetString(GLenum name)
 {
+    const GLubyte *r;
     WRAPPERS_DEBUG_PRINTF("glGetString()\n", name);
-    return functions.glGetString(name);
+    r = functions.glGetString(name);
+    {
+        static GLenum seen[8]; static int n; int i;
+        for (i = 0; i < n; i++) if (seen[i] == name) return r;
+        if (n < 8) seen[n++] = name;
+        fprintf(stderr, "[GLSTR es2] 0x%x -> %s\n", (unsigned)name,
+                r ? (const char *)r : "(null)");
+    }
+    return r;
 }
 void
 my_gles2_glGetTexParameterfv(GLenum target, GLenum pname, GLfloat *params)
@@ -884,6 +997,19 @@ my_gles2_glLinkProgram(GLuint program)
 {
     WRAPPERS_DEBUG_PRINTF("glLinkProgram()\n", program);
     functions.glLinkProgram(program);
+
+    if (functions.glGetProgramiv != NULL) {
+        GLint ok = 1;
+        functions.glGetProgramiv(program, GL_LINK_STATUS, &ok);
+        if (!ok) {
+            char log[1024]; GLsizei len = 0;
+            log[0] = 0;
+            if (functions.glGetProgramInfoLog != NULL)
+                functions.glGetProgramInfoLog(program, sizeof(log) - 1, &len, log);
+            log[(len > 0 && len < (GLsizei)sizeof(log)) ? len : 0] = 0;
+            fprintf(stderr, "[GLSL] program %u FAILED to link: %s\n", program, log);
+        }
+    }
 }
 void
 my_gles2_glPixelStorei(GLenum pname, GLint param)
@@ -937,6 +1063,7 @@ void
 my_gles2_glShaderSource(GLuint shader, GLsizei count, const char **string, const GLint *length)
 {
     WRAPPERS_DEBUG_PRINTF("glShaderSource()\n", shader, count, string, length);
+    gles2_shader_src_store(shader, count, string, length);
     functions.glShaderSource(shader, count, string, length);
 }
 void
@@ -1128,6 +1255,7 @@ my_gles2_glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, 
 void
 my_gles2_glUseProgram(GLuint program)
 {
+    apkenv_glpath_mark("glUseProgram (ES2 shader path)");
     WRAPPERS_DEBUG_PRINTF("glUseProgram()\n", program);
     functions.glUseProgram(program);
 }

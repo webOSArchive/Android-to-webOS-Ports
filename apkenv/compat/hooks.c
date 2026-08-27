@@ -172,6 +172,10 @@ void *apkenv_get_hooked_symbol_dlfcn(void *handle, const char *sym)
                 HOOK_SIZE, hook_cmp);
             if (result != NULL)
                 return result->func;
+            /* A miss here can be the whole ballgame: an engine that probes for
+             * an ES2 entry point and gets NULL concludes the device has no ES2
+             * and builds its fixed-function renderer instead. */
+            printf("GLES2 dlsym MISS: %s\n", sym);
             return NULL;
         }
 #endif
@@ -180,36 +184,97 @@ void *apkenv_get_hooked_symbol_dlfcn(void *handle, const char *sym)
     return apkenv_get_hooked_symbol(sym, 1);
 }
 
-/* Register hooks, SKIPPING any name already in the table.
+/* Register a GLES table, resolving the 68 names GLES1 and GLES2 share.
  *
- * The GLES1 and GLES2 mapping tables share 68 names (glClear, glDrawArrays,
- * glViewport, glBindTexture, ...). An engine that links both libs - Unity does -
- * makes apkenv register both tables, and plain register_hooks() appends
- * duplicates. apkenv_get_hooked_symbol() then bsearch()es a table with two
- * entries for the same name and gets an ARBITRARY one, so half the engine's
- * calls go to the ES1 wrapper and half to the ES2 wrapper. Those forward to two
- * different device libraries against one context: geometry is submitted and
- * silently never drawn (measured on Temple Run 2: ~10k draw calls and 14M
- * vertices a second, correct 1024x768 viewport, blank blue screen).
+ * gles_mapping.h and gles2_mapping.h both define glClear, glDrawArrays,
+ * glViewport, glBindTexture, ... An engine that links both libs - Unity does -
+ * makes apkenv register both tables. Plain register_hooks() appends duplicates,
+ * apkenv_get_hooked_symbol() bsearch()es a table with two entries per name and
+ * gets an ARBITRARY one, and half the engine's calls go to each wrapper against
+ * one context: geometry submitted and silently never drawn (measured on Temple
+ * Run 2: ~10k draw calls and 14M vertices a second, blank screen).
  *
- * DT_NEEDED order decides the winner, and libGLESv1_CM.so precedes libGLESv2.so,
- * which is what we want: the TouchPad can only give an ES1.1 context anyway. */
-static int register_hooks_nodup(const struct _hook *new_hooks, size_t count)
+ * The winner must be the table matching the context we ACTUALLY got, because
+ * the two wrappers forward to two different device libraries (libGLES_CM.so vs
+ * libGLESv2.so) and only one of them belongs to the live context. Registration
+ * order is DT_NEEDED order, which puts GLES1 first regardless - so an explicit
+ * priority is needed, not "keep the first".
+ *
+ * apkenv_active_gles_version() is set by the platform AFTER context creation,
+ * so it reflects any fallback (webos.c degrades ES2 -> ES1 if EGL refuses). */
+static int active_gles_version = 1;
+
+static struct _hook *hook_entry(const char *name);
+
+/* Re-point every name this table shares with the other one at THIS table.
+ * Registration happens while the apk's libs are being resolved, which is
+ * before the platform has created a context - so the first registration is a
+ * guess. This is the correction, applied once the real context version is
+ * known; the hook table is consulted at relocation time, which is later still. */
+static void
+gles_override_shared(const struct _hook *table, size_t count, int version)
+{
+    size_t i, changed = 0;
+    for (i = 0; i < count; i++) {
+        struct _hook *e = hook_entry(table[i].name);
+        if (e != NULL && e->func != table[i].func) {
+            e->func = table[i].func;
+            changed++;
+        }
+    }
+    if (changed != 0)
+        printf("GLES: re-pointed %zu shared symbols at the ES%d wrappers "
+               "(the live context)\n", changed, version);
+}
+
+void apkenv_set_active_gles_version(int v)
+{
+    if (v != 1 && v != 2)
+        return;
+    active_gles_version = v;
+
+#ifdef APKENV_GLES
+    if (v == 1) gles_override_shared(hooks_gles1, HOOKS_GLES1_COUNT, 1);
+#endif
+#ifdef APKENV_GLES2
+    if (v == 2) gles_override_shared(hooks_gles2, HOOKS_GLES2_COUNT, 2);
+#endif
+}
+
+int apkenv_active_gles_version(void)
+{
+    return active_gles_version;
+}
+
+static struct _hook *hook_entry(const char *name)
+{
+    struct _hook key;
+    key.name = name;
+    key.func = NULL;
+    return (struct _hook *)bsearch(&key, hooks, hooks_count, HOOK_SIZE, hook_cmp);
+}
+
+static int register_hooks_gles(const struct _hook *new_hooks, size_t count, int table_version)
 {
     struct _hook filtered[512];
-    size_t i, n = 0;
-    size_t skipped = 0;
+    size_t i, n = 0, skipped = 0, replaced = 0;
+    int preferred = (table_version == apkenv_active_gles_version());
 
     for (i = 0; i < count && n < sizeof(filtered) / sizeof(filtered[0]); i++) {
-        if (apkenv_get_hooked_symbol(new_hooks[i].name, 0) != NULL) {
-            skipped++;
+        struct _hook *existing = hook_entry(new_hooks[i].name);
+        if (existing != NULL) {
+            /* The table that matches the live context wins, whichever order the
+             * engine's DT_NEEDED list registered them in. */
+            if (preferred) { existing->func = new_hooks[i].func; replaced++; }
+            else skipped++;
             continue;
         }
         filtered[n++] = new_hooks[i];
     }
-    if (skipped != 0)
-        printf("GLES: %zu symbols already hooked by the other GLES table - kept the first\n",
-               skipped);
+    if (skipped != 0 || replaced != 0)
+        printf("GLES%d table: %zu shared symbols kept from the other table, "
+               "%zu overridden (live context is ES%d)\n",
+               table_version, skipped, replaced, apkenv_active_gles_version());
     return register_hooks(filtered, n);
 }
 
@@ -242,14 +307,14 @@ void *get_builtin_lib_handle(const char *libname)
     if (strcmp(base, "libGLESv1_CM.so") == 0) {
 #ifdef APKENV_GLES
         if (!global.loader_seen_glesv1)
-            register_hooks_nodup(hooks_gles1, HOOKS_GLES1_COUNT);
+            register_hooks_gles(hooks_gles1, HOOKS_GLES1_COUNT, 1);
 #endif
         global.loader_seen_glesv1 = 1;
     }
     else if (strcmp(base, "libGLESv2.so") == 0) {
 #ifdef APKENV_GLES2
         if (!global.loader_seen_glesv2)
-            register_hooks_nodup(hooks_gles2, HOOKS_GLES2_COUNT);
+            register_hooks_gles(hooks_gles2, HOOKS_GLES2_COUNT, 2);
 #endif
         global.loader_seen_glesv2 = 1;
     }

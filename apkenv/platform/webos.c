@@ -19,6 +19,11 @@
  **/
 
 #include "../apkenv.h"
+#include "../compat/hooks.h"
+
+#include <dlfcn.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 #include <SDL.h>
 #include <PDL.h>
@@ -28,6 +33,10 @@
 #include "common/sdl_mixer_impl.h"
 
 #include "common/input_transform.h"
+
+/* platform/webos_egl_shim.c: ES1/ES2 context probe, gated on APKENV_EGL_PROBE */
+void apkenv_egl_probe(const char *tag);
+void apkenv_egl_warmup(void);
 
 struct PlatformPriv {
     SDL_Surface *screen;
@@ -45,6 +54,9 @@ static int finger_down[WEBOS_MAX_FINGERS];
 static int
 webos_init(int gles_version)
 {
+    apkenv_egl_probe("pre-PDL");
+    apkenv_egl_warmup();
+
     /* PDL FIRST — before SDL. This is the 3-layer-compositor requirement. */
     PDL_Init(0);
     PDL_SetTouchAggression(PDL_AGGRESSION_MORETOUCHES);
@@ -54,6 +66,8 @@ webos_init(int gles_version)
         fprintf(stderr, "webos_init: SDL_Init failed: %s\n", SDL_GetError());
         return 0;
     }
+
+    apkenv_egl_probe("post-PDL/SDL_Init");
 
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, gles_version);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
@@ -93,6 +107,13 @@ webos_init(int gles_version)
     apkenv_accelerometer_register(sdl_accelerometer);
     apkenv_audio_register(sdl_audio);
     apkenv_mixer_register(sdl_mixer);
+
+    /* Publish the version we ACTUALLY got (this may be a fallback), so the
+     * hook tables can give the ~68 shared GLES1/GLES2 names to the wrapper that
+     * belongs to the live context. Must happen before any apk lib is loaded. */
+    apkenv_set_active_gles_version(gles_version);
+
+    apkenv_egl_probe("post-SetVideoMode");
 
     fprintf(stderr, "webos_init: surface %dx%d, gles_version=%d\n",
             priv.screen->w, priv.screen->h, gles_version);
@@ -237,13 +258,91 @@ webos_request_text_input(int is_password, const char *text,
     callback(NULL, user_data);
 }
 
+/* ---- frame grab -----------------------------------------------------------
+ * "The screen is purple" is not a measurement, and there is no screenshot tool
+ * on webOS 3.0.5 for a GL app (the compositor owns the panel; /dev/fb0 does not
+ * hold the accelerated layer). Read the frame back from GL itself instead, so a
+ * render bug can be LOOKED at from the workstation:
+ *
+ *   APKENV_GL_SNAPSHOT=<frame>[,<frame>...]  writes /media/internal/apkenv-snap-<n>.ppm
+ *
+ * glReadPixels is resolved from the library that owns the live context - the
+ * ES1 and ES2 device libs are separate front-ends and only one is correct. */
+static void
+webos_snapshot(unsigned long frame)
+{
+    static void (*read_pixels)(int, int, int, int, unsigned, unsigned, void *);
+    static int resolved;
+    int w = priv.screen ? priv.screen->w : 0;
+    int h = priv.screen ? priv.screen->h : 0;
+    unsigned char *px, *row;
+    char path[128];
+    FILE *f;
+    int y;
+
+    if (w <= 0 || h <= 0) return;
+    if (!resolved) {
+        const char *lib = (apkenv_active_gles_version() == 2)
+                        ? "libGLESv2.so" : "libGLES_CM.so";
+        void *h2 = dlopen(lib, RTLD_LAZY | RTLD_NOLOAD);
+        if (h2 == NULL) h2 = dlopen(lib, RTLD_LAZY);
+        if (h2 != NULL)
+            *(void **)&read_pixels = dlsym(h2, "glReadPixels");
+        resolved = 1;
+        fprintf(stderr, "[SNAP] glReadPixels from %s: %p\n", lib, (void *)read_pixels);
+    }
+    if (read_pixels == NULL) return;
+
+    px = malloc((size_t)w * h * 4);
+    if (px == NULL) return;
+    /* GL_RGBA / GL_UNSIGNED_BYTE is the one combination ES guarantees. */
+    read_pixels(0, 0, w, h, 0x1908 /*GL_RGBA*/, 0x1401 /*GL_UNSIGNED_BYTE*/, px);
+
+    snprintf(path, sizeof(path), "/media/internal/apkenv-snap-%lu.ppm", frame);
+    f = fopen(path, "wb");
+    if (f == NULL) { free(px); return; }
+    fprintf(f, "P6\n%d %d\n255\n", w, h);
+    /* GL origin is bottom-left; PPM is top-down. */
+    for (y = h - 1; y >= 0; y--) {
+        int x;
+        row = px + (size_t)y * w * 4;
+        for (x = 0; x < w; x++)
+            fwrite(row + x * 4, 1, 3, f);
+    }
+    fclose(f);
+    free(px);
+    fprintf(stderr, "[SNAP] wrote %s (%dx%d)\n", path, w, h);
+}
+
+static int
+webos_snapshot_wanted(unsigned long frame)
+{
+    const char *spec = getenv("APKENV_GL_SNAPSHOT");
+    const char *p;
+    if (spec == NULL || spec[0] == 0) return 0;
+    for (p = spec; *p; ) {
+        unsigned long v = strtoul(p, (char **)&p, 10);
+        if (v == frame) return 1;
+        while (*p && *p != ',') p++;
+        if (*p == ',') p++;
+    }
+    return 0;
+}
+
 static void
 webos_update()
 {
+    static unsigned long frame;
+
     /* Stage 3: if the game renders into an offscreen portrait FBO, blit it
      * (rotated) to the native landscape framebuffer before the swap. No-op
      * unless module_hacks->render_to_fbo is set. */
     apkenv_fbo_present();
+
+    frame++;
+    if (webos_snapshot_wanted(frame))
+        webos_snapshot(frame);   /* before the swap: the back buffer still holds it */
+
     SDL_GL_SwapBuffers();
 }
 

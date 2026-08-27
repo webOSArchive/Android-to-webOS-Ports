@@ -228,3 +228,151 @@ eglCreateContext(EGLDisplay dpy, EGLConfig config, EGLContext share, const EGLin
     }
     return c;
 }
+
+/* ---- diagnostic probe -----------------------------------------------------
+ * Can THIS process, in its current state, create an ES2 context at all?
+ * tools/egl2test.c answers that from a novacom shell (27/27 configs OK, raw,
+ * +PDL, and with SDL's ES1 context current). Running the same probe from
+ * inside apkenv - and from inside the app JAIL when launched from the icon -
+ * is what tells us whether the jail is the difference.
+ * Gated on APKENV_EGL_PROBE=1 so it costs nothing in normal runs. */
+void
+apkenv_egl_probe(const char *tag)
+{
+    shim_init();
+    if (!getenv("APKENV_EGL_PROBE")) return;
+
+    EGLDisplay dpy = eglGetCurrentDisplay();
+    const char *how = "current";
+    if (dpy == EGL_NO_DISPLAY) {
+        EGLint maj = 0, min = 0;
+        how = "fresh";
+        dpy = eglGetDisplay((EGLNativeDisplayType)0);
+        if (dpy == EGL_NO_DISPLAY || !eglInitialize(dpy, &maj, &min)) {
+            dpy = eglGetDisplay((EGLNativeDisplayType)1);
+            if (dpy == EGL_NO_DISPLAY || !eglInitialize(dpy, &maj, &min)) {
+                fprintf(stderr, "[EGLPROBE %s] no usable display (err=0x%x)\n",
+                        tag, real_geterr ? real_geterr() : 0);
+                return;
+            }
+        }
+    }
+
+    EGLConfig cfgs[SHIM_MAX_CFGS]; EGLint n = 0, k;
+    if (!eglGetConfigs(dpy, cfgs, SHIM_MAX_CFGS, &n)) {
+        fprintf(stderr, "[EGLPROBE %s] eglGetConfigs failed err=0x%x\n",
+                tag, real_geterr ? real_geterr() : 0);
+        return;
+    }
+    eglBindAPI(EGL_OPENGL_ES_API);
+
+    static const EGLint a1[] = { EGL_CONTEXT_CLIENT_VERSION, 1, EGL_NONE };
+    static const EGLint a2[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    int es1_ok = 0, es2_ok = 0, es2_cap = 0; EGLint first_err = 0, first_id = 0;
+
+    for (k = 0; k < n; k++) {
+        struct cfginfo i; query(dpy, cfgs[k], &i);
+        if (i.rt & EGL_OPENGL_ES_BIT) {
+            EGLContext c = real_create_ctx(dpy, cfgs[k], EGL_NO_CONTEXT, a1);
+            if (c != EGL_NO_CONTEXT) { es1_ok++; eglDestroyContext(dpy, c); }
+        }
+        if (i.rt & EGL_OPENGL_ES2_BIT) {
+            es2_cap++;
+            EGLContext c = real_create_ctx(dpy, cfgs[k], EGL_NO_CONTEXT, a2);
+            if (c != EGL_NO_CONTEXT) { es2_ok++; eglDestroyContext(dpy, c); }
+            else if (!first_err) {
+                first_err = real_geterr ? real_geterr() : 0;
+                first_id = i.id;
+            }
+        }
+    }
+    fprintf(stderr, "[EGLPROBE %s] display=%p (%s) configs=%d  ES1 ctx OK %d  "
+            "ES2-capable %d  ES2 ctx OK %d%s",
+            tag, (void*)dpy, how, n, es1_ok, es2_cap, es2_ok, es2_ok ? "\n" : "");
+    if (!es2_ok)
+        fprintf(stderr, "  first failure: cfg id=%d err=0x%x (%s)\n", first_id, first_err,
+                first_err == EGL_BAD_ALLOC ? "BAD_ALLOC" :
+                first_err == EGL_BAD_CONFIG ? "BAD_CONFIG" :
+                first_err == EGL_BAD_ATTRIBUTE ? "BAD_ATTRIBUTE" : "?");
+}
+
+/* ---- ES2 warm-up ----------------------------------------------------------
+ * THE fix for "Could not create EGL context" on the TouchPad.
+ *
+ * Measured, not theorised (plan/logs/tr2-es2-1.log): SDL's eglCreateContext
+ * with EGL_CONTEXT_CLIENT_VERSION=2 returns EGL_BAD_ALLOC when it is the FIRST
+ * EGL work the process does - yet tools/egl2test.c creates ES2 contexts on all
+ * 27 configs from a bare process, with PDL, and even with SDL's ES1 context
+ * current. The difference is that egl2test opens and initialises a display and
+ * makes a context first. Doing the same here before SDL asks makes SDL's own
+ * ES2 request succeed (verified on device: gles_version=2).
+ *
+ * This does NOT create a window surface and does NOT call eglSwapBuffers, so
+ * SDL still owns the surface and the 3-layer compositor rule in
+ * webos://knowledge/pdk still holds.
+ *
+ * Set APKENV_EGL_WARMUP=0 to skip it (e.g. to reproduce the old behaviour). */
+void
+apkenv_egl_warmup(void)
+{
+    const char *off = getenv("APKENV_EGL_WARMUP");
+    if (off != NULL && off[0] == '0') {
+        fprintf(stderr, "[EGLWARM] disabled by APKENV_EGL_WARMUP=0\n");
+        return;
+    }
+    shim_init();
+
+    EGLDisplay dpy = eglGetDisplay((EGLNativeDisplayType)0);
+    EGLint maj = 0, min = 0;
+    if (dpy == EGL_NO_DISPLAY || !eglInitialize(dpy, &maj, &min)) {
+        dpy = eglGetDisplay((EGLNativeDisplayType)1);
+        if (dpy == EGL_NO_DISPLAY || !eglInitialize(dpy, &maj, &min)) {
+            fprintf(stderr, "[EGLWARM] no usable display; skipping warm-up\n");
+            return;
+        }
+    }
+    eglBindAPI(EGL_OPENGL_ES_API);
+
+    EGLConfig cfgs[SHIM_MAX_CFGS]; EGLint n = 0, k;
+    if (!eglGetConfigs(dpy, cfgs, SHIM_MAX_CFGS, &n) || n <= 0) {
+        fprintf(stderr, "[EGLWARM] eglGetConfigs failed; skipping warm-up\n");
+        return;
+    }
+
+    static const EGLint a1[] = { EGL_CONTEXT_CLIENT_VERSION, 1, EGL_NONE };
+    static const EGLint a2[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    int made = 0;
+    for (k = 0; k < n && !made; k++) {
+        struct cfginfo i; query(dpy, cfgs[k], &i);
+        if (!(i.rt & EGL_OPENGL_ES2_BIT) || !(i.st & EGL_WINDOW_BIT))
+            continue;
+
+        /* An ES1 context FIRST, then ES2. Measured: creating ES2 as the very
+         * first context in the process returns EGL_BAD_ALLOC on every one of
+         * the 27 configs, but after one ES1 context has been created (and even
+         * destroyed) ES2 succeeds on all of them - which is why
+         * tools/egl2test.c, which tries ES1 before ES2 per config, saw 27/27.
+         * The Adreno driver evidently defers some per-process initialisation
+         * to the first context and only the ES1 path performs it. */
+        EGLContext c1 = real_create_ctx(dpy, cfgs[k], EGL_NO_CONTEXT, a1);
+        if (c1 != EGL_NO_CONTEXT)
+            eglDestroyContext(dpy, c1);
+        else
+            fprintf(stderr, "[EGLWARM] ES1 priming context failed on cfg id=%d (err=0x%x)\n",
+                    i.id, real_geterr ? real_geterr() : 0);
+
+        EGLContext c = real_create_ctx(dpy, cfgs[k], EGL_NO_CONTEXT, a2);
+        if (c != EGL_NO_CONTEXT) {
+            eglDestroyContext(dpy, c);
+            made = 1;
+            fprintf(stderr, "[EGLWARM] EGL %d.%d up, ES1-primed, ES2 context proven on "
+                            "cfg id=%d (%d configs) - SDL's ES2 request should now succeed\n",
+                    maj, min, i.id, n);
+        }
+    }
+    if (!made)
+        fprintf(stderr, "[EGLWARM] no ES2 context could be created on any of %d configs "
+                        "(err=0x%x) - expect the ES1 fallback\n",
+                n, real_geterr ? real_geterr() : 0);
+    /* Deliberately NOT eglTerminate(): the display must stay initialised. */
+}

@@ -12,6 +12,15 @@ my_eglGetProcAddress(const char *procname)
 {
     WRAPPERS_DEBUG_PRINTF("eglGetProcAddress(%s)\n", procname);
     void *sym = apkenv_get_hooked_symbol(procname, 1);
+    /* libunity imports eglGetProcAddress and almost nothing else from EGL, so
+     * this is the engine's whole conversation with the GL loader - including
+     * whatever it probes to decide which renderer to build. Log it. */
+    {
+        static int n;
+        if (n < 200) { n++;
+            printf("[EGLPROC] %s -> %s\n", procname, sym ? "ok" : "NULL");
+        }
+    }
     if (sym == NULL)
         printf("eglGetProcAddress: unimplemented: %s\n", procname);
     return sym;

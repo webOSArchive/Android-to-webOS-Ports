@@ -51,4 +51,11 @@ void hooks_init(void);
 
 extern char my___sF[SIZEOF_SF * 3];
 
+
+/* Which GLES context the platform actually created (1 or 2). Set after
+ * context creation; decides which wrapper table owns the ~68 names that
+ * GLES1 and GLES2 share. */
+void apkenv_set_active_gles_version(int v);
+int apkenv_active_gles_version(void);
+
 #endif /* COMPAT_HOOKS_H */
