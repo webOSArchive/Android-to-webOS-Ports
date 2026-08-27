@@ -37,6 +37,7 @@
 #include <sys/uio.h>
 
 #include "hooks.h"
+#include "hostlib.h"
 #include "../apkenv.h"
 #include "../linker/linker.h"
 
@@ -55,7 +56,9 @@ extern struct GlobalState global;
 
 char my___sF[SIZEOF_SF * 3];
 
-#define HOOKS_MAX 1024
+/* raised from 1024: the host-library bridge (compat/hostlib.c) adds a whole
+ * language runtime's export list at once - Mono contributes 118. */
+#define HOOKS_MAX 2048
 
 static void no_hook(void);
 
@@ -91,12 +94,16 @@ enum builtin_library_id {
     BUILTIN_LIB_EGL = 0,
     BUILTIN_LIB_GLESV1 = 1,
     BUILTIN_LIB_GLESV2 = 2,
+    /* Only builtin while a host library is standing in for it - see
+     * get_builtin_lib_handle(). Otherwise the apk's own copy loads normally. */
+    BUILTIN_LIB_MONO = 3,
 };
 
 static const char *builtin_libs[] = {
     [BUILTIN_LIB_EGL] = "libEGL.so",
     [BUILTIN_LIB_GLESV1] = "libGLESv1_CM.so",
     [BUILTIN_LIB_GLESV2] = "libGLESv2.so",
+    [BUILTIN_LIB_MONO] = "libmono.so",
 };
 
 /* this is just to not log errors if those libs are missing */
@@ -210,9 +217,16 @@ void *get_builtin_lib_handle(const char *libname)
         global.loader_seen_glesv2 = 1;
     }
 
-    for (i = 0; i < sizeof(builtin_libs) / sizeof(builtin_libs[0]); i++)
-        if (strcmp(libname, builtin_libs[i]) == 0)
-            return &builtin_libs[i];
+    for (i = 0; i < sizeof(builtin_libs) / sizeof(builtin_libs[0]); i++) {
+        if (strcmp(libname, builtin_libs[i]) != 0)
+            continue;
+        /* Entries that are only builtin when bridged: if no host library has
+         * taken over this SONAME, fall through so the apk's copy is loaded as
+         * usual. This keeps every other port (WMW/PvZ/Alex) unaffected. */
+        if (i == BUILTIN_LIB_MONO && !apkenv_hostlib_provides(libname))
+            return NULL;
+        return &builtin_libs[i];
+    }
 
     return NULL;
 }
@@ -239,17 +253,32 @@ int is_lib_optional(const char *name)
  * word arguments to the real symbol in the named library and logs entry/exit.
  * Brackets which engine->runtime call crashes, without a debugger. */
 #define TRACE_MAX 16
+static void *trace_fns[TRACE_MAX];
 static char *trace_lib[TRACE_MAX], *trace_sym[TRACE_MAX];
 static void *trace_real[TRACE_MAX];
 static int trace_n = 0;
 extern struct GlobalState global;
 static void *trace_call(int i, int a, int b, int c, int d)
 {
-    if (!trace_real[i]) {   /* hook-free lookup straight in the library's symtab */
+    if (!trace_real[i]) {
         char ln[128]; snprintf(ln, sizeof(ln), "%s%s", trace_lib[i], strstr(trace_lib[i], ".so") ? "" : ".so");
-        soinfo *si = apkenv_find_library(ln);
-        Elf32_Sym *sym = si ? apkenv_lookup_in_library(si, trace_sym[i]) : NULL;
-        if (sym && sym->st_shndx != 0) trace_real[i] = (void *)(sym->st_value + si->base);
+        /* A bridged host library first. This MUST come before the bionic
+         * lookup: when a host library stands in for this SONAME the bionic copy
+         * is not loaded at all, so apkenv_find_library() returns NULL and the
+         * tracer would report "unresolved" and silently SWALLOW the call -
+         * which looks exactly like the runtime hanging. */
+        trace_real[i] = apkenv_hostlib_dlsym(ln, trace_sym[i]);
+        if (!trace_real[i]) {   /* hook-free lookup straight in the library's symtab */
+            soinfo *si = apkenv_find_library(ln);
+            Elf32_Sym *sym = si ? apkenv_lookup_in_library(si, trace_sym[i]) : NULL;
+            if (sym && sym->st_shndx != 0) trace_real[i] = (void *)(sym->st_value + si->base);
+        }
+        /* Never forward to ourselves: if the name resolved back to the tracer's
+         * own wrapper we would recurse until the stack ran out. */
+        if (trace_real[i] == (void *)trace_fns[i]) {
+            fprintf(stderr, "[TRACE] %s resolved to the tracer wrapper - dropping\n", trace_sym[i]);
+            trace_real[i] = NULL;
+        }
     }
     fprintf(stderr, "[TRACE] -> %s(%#x, %#x, %#x, %#x) real=%p\n", trace_sym[i], a, b, c, d, trace_real[i]);
     if (!trace_real[i]) { fprintf(stderr, "[TRACE] %s unresolved\n", trace_sym[i]); return NULL; }

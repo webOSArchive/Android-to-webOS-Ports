@@ -52,6 +52,8 @@
 #include "compat/gles2_wrappers.h"
 #include "linker/linker.h"
 #include "compat/hooks.h"
+#include "compat/hostlib.h"
+#include "compat/mono_symbols.h"
 
 #include "apkenv.h"
 
@@ -945,6 +947,26 @@ int main(int argc, char **argv)
     global.apk_filename = strdup(argv[argc-1]);
     
     hooks_init();
+
+    /* --- host-library bridge (see compat/hostlib.h) --------------------------
+     * Must run BEFORE any apk library is dlopen()ed: the bionic linker consults
+     * the hook table ahead of library symbols for every relocation, so the
+     * bridge has to be registered by the time libunity.so is relocated.
+     *
+     * APKENV_HOST_MONO=<path to a glibc-built libmono.so> swaps Unity's bionic
+     * Mono for a native one. Opt-in via the environment on purpose: every other
+     * port must be unaffected. */
+    {
+        const char *host_mono = getenv("APKENV_HOST_MONO");
+        if (host_mono != NULL && *host_mono != '\0') {
+            if (apkenv_hostlib_bridge(host_mono, "libmono.so",
+                                      mono_bridge_symbols,
+                                      MONO_BRIDGE_SYMBOL_COUNT) != 0) {
+                printf("ERROR: APKENV_HOST_MONO bridge failed (%s).\n", host_mono);
+                exit(3);
+            }
+        }
+    }
     
     if(global.use_dvm) {
         strcpy(android_sopath, global.android_path);
@@ -986,8 +1008,15 @@ int main(int argc, char **argv)
     };
     static const char* libblacklist[] = {
         "libs3eflurry_ext.so",
+        /* Filled in below when a host library stands in for an apk library. */
+        0,
         0
     };
+    /* Do not load the apk's own copy of anything the host-library bridge has
+     * taken over; its symbols are already hooked, and loading it would put a
+     * second (bionic) runtime in the process. */
+    if (apkenv_hostlib_provides("libmono.so"))
+        libblacklist[1] = "libmono.so";
     int ilib = 0;
     struct SharedLibrary *shlibs = 0;
     while (libdir[ilib]!=0) {

@@ -99,6 +99,18 @@ apkenv_hostlib_bridge(const char *path, const char *libname,
         if (symbols[i] == NULL)
             continue;
 
+        /* Leave anything already hooked alone. In practice that is the call
+         * tracer (APKENV_TRACE_CALLS), which registers in hooks_init() - i.e.
+         * before us. Two entries with the same name would make bsearch() pick
+         * one arbitrarily; letting the tracer win is both deterministic and
+         * what the user asked for. The tracer forwards to us via
+         * apkenv_hostlib_dlsym(). */
+        if (apkenv_get_hooked_symbol(symbols[i], 0) != NULL) {
+            fprintf(stderr, "[HOSTLIB] %s already hooked (tracer?) - not overriding\n",
+                    symbols[i]);
+            continue;
+        }
+
         dlerror();
         addr = dlsym(handle, symbols[i]);
         if (addr == NULL) {
@@ -149,6 +161,8 @@ apkenv_hostlib_bridge(const char *path, const char *libname,
 
     fprintf(stderr, "[HOSTLIB] %s -> %s: %zu/%zu symbols bridged\n",
             libname, path, resolved, n);
+    if (resolved != n)
+        fprintf(stderr, "[HOSTLIB] (%zu left to existing hooks)\n", n - resolved);
 
     return 0;
 }

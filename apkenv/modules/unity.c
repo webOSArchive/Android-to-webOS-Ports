@@ -290,6 +290,9 @@ static int
 unity_try_init(struct SupportModule *self)
 {
     self->priv->JNI_OnLoad_libunity = (jni_onload_t)LOOKUP_LIBM("libunity","JNI_OnLoad");
+    /* Always NULL: the apk's libmono.so exports no JNI_OnLoad (checked with nm),
+     * and nothing here calls the stored pointer. Kept only for symmetry with
+     * libunity above. With APKENV_HOST_MONO set, libmono is not loaded at all. */
     self->priv->JNI_OnLoad_libmono = (jni_onload_t)LOOKUP_LIBM("libmono","JNI_OnLoad");
 
     self->override_env.GetStaticFieldID = unity_jnienv_GetStaticFieldID;
