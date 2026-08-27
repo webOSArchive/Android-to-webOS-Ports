@@ -391,6 +391,74 @@ failing to start, and `apkenv.c` gained a module GLES preference + `APKENV_GLES_
 Fortunately Unity 3.5's libunity carries **both** renderers (11 fixed-function imports and 14
 shader imports) and picks fixed-function here — `glCreateShader` is never called.
 
+## 9. Handoff (2026-08-27, end of session)
+
+**Installed and launchable from the icon:** `com.apkenv.templerun2` v0.1.2
+(`packaging/out/`, built by `packaging/build-ipk.sh` with
+`APPID/APK/APPINFO/ENVFILE/HOSTLIBS`). The package ships the native Mono runtime in
+`hostlibs/webos/` and sets `APKENV_HOST_MONO` through `android/apkenv.env`.
+
+**Fixed since section 8 was written:**
+- **The tap-abort.** `unity.c`'s `GetStringUTFChars` returned the jstring's own buffer while
+  the generic `ReleaseStringUTFChars` `free()`s whatever Get returns — the first touch aborted
+  the process with `double free or corruption (fasttop)`. `jni/jnienv.c` already returns a
+  copy and documents the trap (it bit WMW2); the unity module never got the fix. Confirmed on
+  device: abort gone, run reached **3600 frames** (was dying at ~600).
+  **General rule: a fake-JNI `GetStringUTFChars` must return a COPY, in every module.**
+- **Input focus requires the LAUNCHER, not novacom.** Launched via `novacom run`, SDL delivered
+  `ev_total=1` in 2400 polls and **no `SDL_ACTIVEEVENT`** — the app renders but never gains
+  input focus. Launched from the installed icon: **26 `type=5` (BUTTONDOWN) + 26 `type=6` (UP),
+  `ev_total=161`**. Foreground-vs-detached made no difference (tested, refuted).
+  **Touch must be tested from a packaged `.ipk`.**
+
+**Open (input): taps reach `nativeTouch` and the engine ignores them.** No crash, no freeze,
+6600+ frames — the menu simply does not respond. What is already verified, so do not re-check:
+events arrive (counts above); `module->input` is wired; `unity_input()` maps
+`ACTION_DOWN/UP/MOVE` to Android's `0/1/2` correctly; `nativeTouch`'s signature `(IFFIJI)V`
+matches the typedef; and `UnityPlayer.dispatchTouchEvent` confirms the argument order
+`nativeTouch(pointerId, x, y, action, eventTime, extra)`.
+- **First diagnostic:** log every `unity_input()` call with the exact values handed to
+  `nativeTouch` — confirm it is invoked, with sane pixel coordinates and a monotonic
+  `eventTime`. (Nothing currently proves the call happens, only that SDL saw the event.)
+- Then, in order: (a) `eventTime` — the Java host passes `SystemClock.uptimeMillis()`; if
+  `un_now_ms()` is not the same clock base Unity compares against, events can be discarded as
+  stale; (b) whether this game's menu is driven by `nativeTouch` at all or by
+  **`nativeQueueGUIEvent(IFFI)V`** (also exported, currently never called); (c) the `k`/`u`
+  gating flags in `dispatchTouchEvent`, and `nativeEnableTouchpad`.
+- Note the Java host *queues* `nativeTouch` to the GL thread via `queueEvent`. apkenv calls
+  `input_update()` and `module->update()` from the same loop thread (`apkenv.c:1202-1207`), so
+  this is already equivalent — not a suspect.
+
+**Orientation is settled — do NOT do the portrait/FBO work.** The engine calls
+`setOrientation(0)` = **LANDSCAPE** (`ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE`), and the apk's
+manifest declares no `screenOrientation`. The landscape framebuffer we already have is what the
+game asks for. (Section 8 listed portrait as item 2 on the strength of how it looks; the engine
+disagrees, and the engine is the authority.)
+
+**THE open problem: the 3D scene is purple/untextured, UI text renders correctly.**
+Everything else works — 3600+ frames, no crashes, audio pump up, ~10k draws/sec.
+- Ruled out: the ETC1 decoder (`tools/etc1test.c` verifies it against spec-derived vectors;
+  `glCompressedTexImage2D` GL errors went from *every texture* to **0**), GLES1-vs-GLES2
+  (`glCreateShader` is never called — Unity uses fixed-function here), and geometry submission
+  (measured: correct 1024x768 viewport, ~14.5M verts per 600 frames).
+- Next suspects, in order: (a) **Unity's ETC1+alpha split** — alpha lives in a *second* ETC1
+  texture, so an RGB-only upload breaks blending; (b) **`glTexEnv` combine modes** on the
+  fixed-function path; (c) the uncompressed uploads (`GL_UNSIGNED_SHORT_4_4_4_4` / `5_5_5_1`).
+- **Method:** extend the existing `APKENV_GL_PROBE` to dump GL *state* around a draw — is a
+  texture bound, is `GL_TEXTURE_2D` enabled, what `glTexEnv` mode, blend/depth state — rather
+  than reasoning about it. That is what found the duplicate-hook bug today.
+
+### Cross-reference: `/home/jonwise/Projects/touchpad-pdk` (the PDK-patching track)
+Its `touchpad-porting.md` is the closest prior art and is worth reading before the next attempt:
+- Its symptom→cause table covers this exact family of Adreno bugs. The headline one: **DRIVER
+  rendered garbled because `glClear(GL_DEPTH_BUFFER_BIT)` is a no-op while `glDepthMask` is
+  FALSE** — the Adreno driver correctly honours state that the Pre's GPU ignored. Fix was to
+  force `glDepthMask(GL_TRUE)` *at the clear only*, never globally.
+- Same lesson we relearned today, stated there first: **instrument on-device early.** "The
+  DRIVER port took ~11 blind attempts before a 10-line trace made the bug obvious."
+- Also: colour banding = a 16-bit RGB565 buffer (request `RED/GREEN/BLUE/ALPHA=8`); and
+  "menus fine, then black when gameplay loads" is usually the `requiredMemory` quota, not GL.
+
 ## 8. State at end of session (2026-08-27) — RENDERING, not yet playable
 
 On the device: **the Temple Run 2 title screen and menu render**, audio pump is up, the
