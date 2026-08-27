@@ -20,9 +20,11 @@
 #define FMOD_NUMCHANNELS          2   /* stereo */
 #define FMOD_BYTES_PER_SAMPLE     2   /* S16 */
 
+typedef jint (*fmod_initjni_t)(JNIEnv *, jobject) SOFTFP;
 typedef jint (*fmod_getinfo_t)(JNIEnv *, jobject, jint) SOFTFP;
 typedef jint (*fmod_process_t)(JNIEnv *, jobject, jobject) SOFTFP;
 
+static fmod_initjni_t f_initjni;
 static fmod_getinfo_t f_getinfo;
 static fmod_process_t f_process;
 static JNIEnv        *g_env;
@@ -138,6 +140,14 @@ apkenv_fmod_pump_start(struct GlobalState *global)
     if (g_started)
         return;
 
+    /* org.fmod.FMODAudioDevice.start() calls fmodInitJni() BEFORE it starts the
+     * audio thread (read from FMODAudioDevice.smali). It is how FMOD's Android
+     * layer caches the JNI handles it needs from native code; the mixer runs
+     * without it, so its absence is invisible until something in that layer is
+     * needed. Skipping a call the real host makes is exactly the kind of gap
+     * that shows up later as one subsystem silently not working. */
+    f_initjni = (fmod_initjni_t)global->lookup_symbol(
+            "Java_org_fmod_FMODAudioDevice_fmodInitJni");
     f_getinfo = (fmod_getinfo_t)global->lookup_symbol(
             "Java_org_fmod_FMODAudioDevice_fmodGetInfo");
     f_process = (fmod_process_t)global->lookup_symbol(
@@ -150,6 +160,14 @@ apkenv_fmod_pump_start(struct GlobalState *global)
 
     g_env  = ENV(global);
     g_thiz = (jobject)global;   /* unused by FMOD, just non-NULL */
+
+    if (f_initjni != NULL) {
+        jint r = f_initjni(g_env, g_thiz);
+        fprintf(stderr, "[FMOD] fmodInitJni -> %d\n", (int)r);
+    } else {
+        fprintf(stderr, "[FMOD] fmodInitJni not exported by this engine build\n");
+    }
+
     g_running = 1;
     if (pthread_create(&g_thread, NULL, fmod_pump_thread, NULL) != 0) {
         fprintf(stderr, "[FMOD] pthread_create failed; no audio pump\n");

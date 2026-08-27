@@ -463,3 +463,56 @@ the surface.
 **Shipped: `com.apkenv.templerun2` 1.1.2** - portrait, touch, tilt, textured 3D, swipe. Defaults
 verified with the override file deleted. Remaining: **music** (see the audio section above).
 
+---
+
+# Music: what it is NOT (2026-08-27) - still open
+
+Sound effects work; the music track never plays. Six things are ruled out **by measurement**, so
+the next person should not re-test them:
+
+1. **Not our audio pump.** An output level meter in `audio/fmod_pump.c` (`APKENV_AUDIO_METER=1`)
+   reads FMOD's mixed PCM: pure silence at the menu, while a scripted tap gives `peak=6165`
+   decaying over seconds. The pump and the mixer are healthy; music never reaches them.
+2. **Not file IO.** The apk opens 278 times with no failures (`APKENV_TRACE_FILES=1`).
+3. **Not volume or prefs.** `AudioManager:Awake`'s IL reads "TR Sound Volume" (default 0.75) and
+   "TR Music Volume" (default 0.5); our PlayerPrefs store returns 0.5 correctly.
+4. **Not the game logic.** `AudioManager:StartGameMusic` **is** called during a run, and its IL is
+   `musicSource.Stop(); musicSource.clip = <clip>; musicSource.Play()`. (`StartMainMenuMusic` is
+   only ever called from `UIMainMenuViewController:OnHomeButton`, so no menu music on first boot
+   is expected, not a bug.)
+5. **Not a missing `fmodInitJni`** - though that WAS a real contract gap and is now fixed:
+   `org.fmod.FMODAudioDevice.start()` calls it before starting the audio thread and our C pump
+   never did. It returns 1. No change to the symptom.
+6. **Not a decode error anyone reports.** No Unity/FMOD audio error string, no managed exception.
+
+**What the evidence points at: the stream is opened and then never serviced.**
+- The music is uncompressed MP3 inside the apk (`sharedassets0.assets.resS`, `0x1cfd7f8..0x1e35759`).
+  A seek-range probe (`APKENV_TRACE_SEEK_RANGE`) shows **17-22 seeks, all early**: two clips'
+  headers (one at the start of the .resS, one ~936 KB in), a few KB each, and then **nothing ever
+  again** - including while the game believes music is playing.
+- **Only 3 threads are ever created in the process, and one of them is our own pump.** FMOD
+  normally services streams on a thread of its own; it never asks for one.
+
+So the two candidates worth testing next, in order:
+1. **FMOD's async file path** (`fmod_async.cpp` is in libunity, alongside
+   `PlatformDependent/AndroidPlayer/FMOD_FileIO.cpp`). If Unity registered async file callbacks,
+   stream reads are queued to an FMOD thread that does not exist here - which matches every
+   observation: a synchronous header read at open, then silence forever.
+2. **FMOD initialised to pump streams from `System::update`** instead of a thread, with the update
+   path not reaching the stream. Distinguishing them needs visibility inside libunity's FMOD,
+   which is where the cheap instrumentation runs out.
+
+## Tool worth keeping: `apkenv/tools/ildump.py`
+Mono's `MONO_VERBOSE_METHOD` dump prints call targets as raw metadata tokens
+(`call 0x0600037f`), which is useless until resolved, and there is no monodis/ikdasm here. This
+parses ECMA-335 metadata directly: token -> `Class:Method`, list all methods, and (with the
+body scanner) **find every caller of a given method**. That is how "who starts the music" was
+answered - `GameController:doGameStart/doHandleCountDown/doHandleEndGame` call `StartGameMusic`,
+`UIMainMenuViewController:OnHomeButton` calls `StartMainMenuMusic`.
+
+**Method note:** `MONO_VERBOSE_METHOD=<name>` is a cheap "was this managed method ever called"
+probe - Mono compiles on first invocation, so no output means never called. Always run a positive
+control (`=Awake` prints `converting method UIWidget:Awake ()`); a probe that prints nothing
+because it is misconfigured looks exactly like a probe that prints nothing because the method
+never ran. And watch for inlining: a small method inlined into its caller never appears.
+
