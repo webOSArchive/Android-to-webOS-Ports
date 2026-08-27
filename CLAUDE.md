@@ -30,6 +30,13 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
 
 - **Temple Run 2 (Unity 3.5 + Mono) — OPEN, not running.** Dies in Mono init after several general
   bionic↔glibc ABI fixes (allocator hooks, `sigaction` layout, cleanup handlers). `plan/TEMPLERUN2.md`; execution plan for the native-Mono stage: `plan/TEMPLERUN2-MONO.md`.
+  - **Native Mono track (2026-08-27):** a glibc build of Unity's Mono 2.6.5 now exists
+    (`apkenv/hostlibs/webos/libmono-webos.so`, from `apkenv/tools/build-mono-webos.sh`); its export
+    set matches the apk's bionic `libmono.so` exactly. apkenv gained a **general host-library bridge**
+    (`apkenv/compat/hostlib.[ch]`, `APKENV_HOST_MONO=<path>`) that publishes a glibc `.so`'s symbols
+    into the hook table so bionic code binds to it — reusable for any engine carrying its own runtime.
+    Blocked on device testing (host `novacomd` wedged; needs `sudo systemctl restart novacomd`).
+    Run protocol + full trail: `plan/TEMPLERUN2-MONO.md` §6.
 
 ## Where's My Water? (first port)
 - **Playable end-to-end with audio**, ships as `com.apkenv.wheresmywater` `.ipk` (launcher icon). Portrait via render-to-FBO; FMOD audio pump. Full writeup: `android-port-shim.md`, `apkenv/BUILD-STATE.md`, `plan/STAGE-*.md`.

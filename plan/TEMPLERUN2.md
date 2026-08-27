@@ -1,6 +1,8 @@
 # Temple Run 2 (Unity 3.5.7f6 + Mono) — open track (2026-08-26)
 
-Status: **not running**. Boots through the whole Java `UnityPlayer` init sequence and dies inside
+Status: **not running**; the native-Mono replacement is built and wired (see
+`plan/TEMPLERUN2-MONO.md` — checkpoints A and B met, bridge code complete, C/D
+awaiting device access). Boots through the whole Java `UnityPlayer` init sequence and dies inside
 Mono initialization. This is a different class of port from WMW/PvZ/Alex: the blocker is not the
 Java host contract but **bionic↔glibc ABI mismatches at the libc layer** under apkenv. Each one is
 a silent memory corruption, so progress is by evidence (crash handler + tracers), not theories.

@@ -2,6 +2,12 @@
 # check-mono-exports.sh <libmono.so> - Checkpoint B gate.
 # Exits 0 iff every mono_* symbol libunity.so imports is exported by <libmono.so>.
 set -e
+# Resolve arguments against the CALLER's cwd before we move, so both
+# "tools/check-mono-exports.sh apkenv/hostlibs/..." (from the repo root) and a
+# bare/absolute path work.
+abspath() { case "$1" in /*) printf '%s\n' "$1";; *) printf '%s\n' "$PWD/$1";; esac; }
+[ -n "$1" ] && set -- "$(abspath "$1")" "${@:2}"
+[ -n "$2" ] && set -- "$1" "$(abspath "$2")"
 cd "$(dirname "$0")/.."
 LIB="${1:-hostlibs/webos/libmono-webos.so}"
 WANT="${2:-../plan/tr2-mono-imports.txt}"
