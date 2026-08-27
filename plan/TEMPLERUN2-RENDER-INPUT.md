@@ -266,3 +266,80 @@ decoder. The decoder is correct and unit-tested, but the premise was wrong: the
 duplicate-GLES-hook bug sending uploads to the wrong front-end. Re-test native ETC1
 before assuming the decoder is needed.
 
+---
+
+# SOLVED (2026-08-27, same session) - Temple Run 2 renders and plays
+
+`com.apkenv.templerun2` **1.0.0**. Title screen fully textured; a scripted tap on PLAY starts a
+run and gameplay renders complete (track, sky, HUD, tutorial prompt) - `plan/logs/tr2-gameplay.log`,
+frames in `plan/logs/` via `APKENV_GL_SNAPSHOT`. Two bugs stood between "ES2 context" and "pixels".
+
+## Bug 1 - Unity built its fixed-function ES1 device under an ES2 context
+
+**The selector, at `libunity+0x2d2f68`:**
+```
+2d2f68  ldr  r3, [pc, #44]     ; literal 0x003c6e70
+2d2f6c  add  r3, pc, r3        ; -> global byte at libunity+0x699de4
+2d2f70  ldrb r3, [r3]
+2d2f74  cmp  r3, #0
+2d2f78  bne  2d2f88            ; != 0 -> bl +0x2c44ac   (ES2 device init)
+2d2f7c  bl   2b69b4            ;         (ES1 device init)  <-- what we were getting
+```
+**How it was found - the method matters more than the offsets.** Grepping for the obvious strings
+is a dead end: `libunity` contains both "Creating OpenGLES1.x graphics device" (+0x6136e4) and
+"Creating OpenGLES2.0 graphics device" (+0x614c70), prints **neither**, and **neither has a single
+code reference** - not as a literal, not via the ARM `ldr`+`add rX, pc` idiom, not via the Thumb
+one. They are dead strings in a release build. What worked instead:
+1. One-shot markers in **both** wrapper tables showed the engine calling `glMatrixMode`/`glTexEnvf`/
+   `glEnableClientState` and never `glCreateShader` - fixed-function device, measured not inferred.
+2. A stack scan at the first `glGetString` (glibc cannot unwind bionic-loaded frames, and
+   `__builtin_return_address(1)` is useless with `-fomit-frame-pointer`, so scan the stack for words
+   pointing into libunity that are preceded by a BL/BLX - the technique apkenv's crash handler uses)
+   gave the chain `+0x2b5ed0` (ES1 caps) <- `+0x2b69c4` (ES1 device init) <- `+0x2d2f80`.
+3. Disassembling that one frame showed the branch above. Two independent measurements agree: the
+   ES2 arm `+0x2c44ac` is the function whose caps code calls `glGetString` at `+0x2beb14`.
+
+**The fix** (`modules/unity.c: un_force_gles2_device`): set the flag to 1 *and* rewrite `bne` -> `b`,
+so a later write to the flag cannot undo it. Every patched word is verified against its expected
+value first (`ldrb`/`cmp`/`bne`), so a different libunity build is skipped loudly rather than
+corrupted, and it only ever runs when the live context really is ES2. `APKENV_UNITY_GLES2=0` disables.
+
+*Trap worth remembering:* `__builtin_return_address(0)` must be taken **in the wrapper**, not in a
+helper it calls. Taken inside the helper it reports the wrapper itself - and it silently "worked"
+for one call site only because that one got inlined.
+
+## Bug 2 - the ES2 device was drawing through the ES1 driver
+
+With the ES2 device running, `glCreateShader`/`glUseProgram` appeared and the magenta vanished -
+but the frame became **a flat clear colour with no geometry at all**. Draws were still landing in
+the ES1 wrapper, which forwards to `libGLES_CM`: a *separate front-end with separate state*, which
+knows nothing about the ES2 program and vertex attributes that were bound.
+
+Choosing the right wrapper at symbol-resolution time cannot fix this, and that was worth measuring
+rather than assuming: `[HOOKRES]` tracing showed the engine's GOT is bound **while the apk's
+libraries load, before the platform has created any context** - so at binding time nobody knows
+which context we will get. (Re-pointing the hook tables afterwards, which this session also added,
+is therefore necessary but not sufficient.)
+
+**The fix** (`compat/gles_wrappers.c: apkenv_gles1_bind_driver`): leave the wrappers where they are
+and re-point the *driver* pointers they call through. Once the context exists, the ~68 shared entry
+points resolve from `libGLESv2.so`; ES1-only names (`glMatrixMode`, `glTexEnv`, ...) keep falling
+back to `libGLES_CM`, which is correct because an ES2 device never calls them.
+
+## Tools this left behind (reusable for the next port)
+- `apkenv_egl_warmup()` - ES1-primed EGL warm-up; **an ES2 context on the TouchPad is refused only
+  when it is the first context in the process.**
+- `APKENV_GL_SNAPSHOT=<frame>[,...]` - `glReadPixels` -> PPM. See the render from the workstation.
+- `APKENV_UNITY_AUTOTAP=<frame>:<x>:<y>` - scripted taps through the real input path, for driving a
+  menu with nobody at the device.
+- `tools/tr2-run.sh` - kill -> install -> launch -> wait -> pull log, in one command.
+- `tools/egl2test.c` + `egl2-device-run.sh` - EGL/ES2 capability matrix (raw / +PDL / +SDL).
+
+## Still open
+- **Portrait (Stage P) is untouched** and now unblocked: the manifest says portrait on every Unity
+  activity, and the ES2 render-to-FBO present described in Stage P above is the remaining work.
+- Swipe gameplay (the run needs MOVE deltas with a stable pointer id), audio verification, and the
+  `requiredMemory` quota under a full level are unverified.
+- The ETC1 correction above still stands: the Adreno advertises `GL_OES_compressed_ETC1_RGB8_texture`
+  on both contexts, so the CPU decoder is probably unnecessary now.
+

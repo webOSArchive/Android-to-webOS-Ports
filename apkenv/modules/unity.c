@@ -936,9 +936,37 @@ unity_key_input(struct SupportModule *self, int event, int keycode, int unicode)
 {
 }
 
+/* Scripted taps, for verifying gameplay without a human at the device:
+ *   APKENV_UNITY_AUTOTAP="frame:x:y[,frame:x:y...]"
+ * Injects a DOWN at <frame> and an UP six frames later, through exactly the
+ * same path a real touch takes. Diagnostic only; unset by default. */
+static void
+un_autotap(struct SupportModule *self, unsigned long frame)
+{
+    const char *spec = getenv("APKENV_UNITY_AUTOTAP");
+    const char *p;
+    if (spec == NULL || spec[0] == 0) return;
+    for (p = spec; *p; ) {
+        unsigned long f = strtoul(p, (char **)&p, 10);
+        int x = 0, y = 0;
+        if (*p == ':') { x = (int)strtol(p + 1, (char **)&p, 10); }
+        if (*p == ':') { y = (int)strtol(p + 1, (char **)&p, 10); }
+        if (frame == f || frame == f + 6) {
+            int down = (frame == f);
+            fprintf(stderr, "[UN-AUTOTAP] frame %lu: %s at %d,%d\n",
+                    frame, down ? "DOWN" : "UP", x, y);
+            unity_input(self, down ? ACTION_DOWN : ACTION_UP, x, y, 0);
+        }
+        while (*p && *p != ',') p++;
+        if (*p == ',') p++;
+    }
+}
+
 static void
 unity_update(struct SupportModule *self)
 {
+    { static unsigned long f; un_autotap(self, ++f); }
+
     if (self->priv->nativeRender) {
         jboolean r = self->priv->nativeRender(ENV_M,GLOBAL_M);
         self->priv->frames++;
