@@ -39,9 +39,11 @@
 #include <stdlib.h>
 #include <sys/time.h>
 #include <time.h>
+#include <GLES2/gl2.h>
 #include "../accelerometer/accelerometer.h"
 
 int apkenv_fbo_es2_rotation(void);   /* compat/fbo_es2.c */
+GLuint apkenv_fbo_es2_ensure(void);
 #include "../compat/hooks.h"
 #include <errno.h>
 #include <sys/mman.h>
@@ -924,6 +926,17 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
         fprintf(stderr, "[UN] nativeRecreateGfxState done\n");
     } else {
         fprintf(stderr, "[UN] nativeRecreateGfxState NOT FOUND\n");
+    }
+
+    /* Portrait: take the offscreen FBO now - AFTER the graphics device exists
+     * (nativeInit + nativeRecreateGfxState) and BEFORE unityAndroidInit draws
+     * the splash. Creating it before the device produced GL_OUT_OF_MEMORY and
+     * a flat-colour screen; creating it lazily on the engine's first
+     * glBindFramebuffer(0) let the first frames (the 3D backdrop, unrotated)
+     * go straight to the window. */
+    if (un_portrait()) {
+        GLuint fb = apkenv_fbo_es2_ensure();
+        fprintf(stderr, "[UN] portrait FBO bound after device creation: %u\n", fb);
     }
 
     char libdir[512]; snprintf(libdir, sizeof(libdir), "%slib", home);

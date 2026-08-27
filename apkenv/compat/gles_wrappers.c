@@ -290,6 +290,7 @@ my_glAlphaFunc(GLenum func, GLclampf ref)
 #include "hooks.h"
 
 void apkenv_glpath_mark(const char *what);
+extern unsigned long apkenv_gl_draws;
 void apkenv_fbo_es2_present(void);   /* compat/fbo_es2.c */
 
 /* Where in the ENGINE does an ES1-only call come from?  The engine builds its
@@ -1083,6 +1084,7 @@ void
 my_glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
     apkenv_glpath_mark("glDrawArrays via ES1 wrapper");
+    apkenv_gl_draws++;
     if (gp_enabled()) { gp_draws++; gp_verts += (unsigned long)count; }
 
     WRAPPERS_DEBUG_PRINTF("glDrawArrays(mode=0x%04x, first=%d, count=%d)\n", mode, first, count);
@@ -1099,6 +1101,7 @@ void
 my_glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
 {
     apkenv_glpath_mark("glDrawElements via ES1 wrapper");
+    apkenv_gl_draws++;
     if (gp_enabled()) { gp_draws++; gp_verts += (unsigned long)count; }
 
     WRAPPERS_DEBUG_PRINTF("glDrawElements(%d, %d, %d, %p)\n", mode, count, type, indices);
@@ -2085,6 +2088,10 @@ my_glIsFramebufferOES(GLuint framebuffer)
 void
 my_glBindFramebufferOES(GLenum target, GLuint framebuffer)
 {
+    {   static int n;
+        if (n++ < 12)
+            fprintf(stderr, "[FBO-OES] glBindFramebufferOES(%u) via the ES1 wrapper\n", framebuffer);
+    }
     if (gp_enabled()) { gp_fbo = (int)framebuffer; }
 
     WRAPPERS_DEBUG_PRINTF("glBindFramebufferOES(target=0x%04x, framebuffer=%u)\n", target, framebuffer);

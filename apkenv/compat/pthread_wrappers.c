@@ -213,7 +213,7 @@ static void *apkenv_thread_trampoline(void *p)
 {
     struct apkenv_thread_log *t = p;
     void *(*fn)(void*) = t->fn; void *arg = t->arg; free(t);
-    fprintf(stderr, "[PTHREAD] >>> start tid=%lu routine=%p\n",
+    fprintf(stderr, "[PTHREAD] >>> start ktid=%ld tid=%lu routine=%p\n", (long)syscall(224),
             (unsigned long)pthread_self(), (void*)fn);
     void *r = fn(arg);
     fprintf(stderr, "[PTHREAD] <<< end   tid=%lu routine=%p ret=%p\n",

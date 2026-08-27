@@ -1,8 +1,51 @@
 #include "libc_wrappers.h"
+#include <sys/mman.h>
 #include "hooks.h"
 
 #include <sys/syscall.h>
 #include <assert.h>
+
+/* Per-fd read accounting inside the watched range (APKENV_TRACE_SEEK_RANGE).
+ * A seek probe cannot see SEQUENTIAL reads, so "the engine reads the header
+ * and nothing else" was never actually proven. Track each fd's position
+ * (from lseek + bytes read) and count the bytes read while inside the range;
+ * report periodically. Streamed audio that is being serviced shows as a
+ * steadily growing byte count; a stream that is opened and abandoned shows a
+ * few KB and then a flat line. */
+static long   acct_pos[64];
+static long   acct_range_bytes[64];
+static long   acct_lo = -1, acct_hi = -1;
+static void
+acct_init(void)
+{
+    if (acct_lo >= 0) return;
+    const char *e = getenv("APKENV_TRACE_SEEK_RANGE");
+    acct_lo = acct_hi = 0;
+    if (e != NULL) sscanf(e, "%li-%li", &acct_lo, &acct_hi);
+}
+static void
+acct_seek(int fd, long pos)
+{
+    if (fd >= 0 && fd < 64) acct_pos[fd] = pos;
+}
+static void
+acct_read(int fd, long n)
+{
+    static long last_report;
+    static int reports;
+    long total = 0; int i;
+    acct_init();
+    if (acct_hi <= 0 || fd < 0 || fd >= 64 || n <= 0) return;
+    if (acct_pos[fd] >= acct_lo && acct_pos[fd] <= acct_hi)
+        acct_range_bytes[fd] += n;
+    acct_pos[fd] += n;
+    for (i = 0; i < 64; i++) total += acct_range_bytes[i];
+    if (total - last_report >= 65536 && reports < 200) {
+        fprintf(stderr, "[READ] bytes read inside watched range so far: %ld\n", total);
+        last_report = total; reports++;
+    }
+}
+
 
 #ifdef APKENV_DEBUG
 #  define WRAPPERS_DEBUG_PRINTF(...) printf(__VA_ARGS__)
@@ -214,6 +257,23 @@ trace_file_open(const char *what, const char *path, int ok, int err)
         fprintf(stderr, "[FILE] %s(%s) ok\n", what, path);
 }
 
+/* Bounded mmap/munmap tracing (APKENV_TRACE_FILES=1). libunity imports mmap
+ * and its ApkFile layer may map the apk instead of read()ing it - in which
+ * case a seek/read probe sees nothing and "the engine never reads X" is an
+ * artifact of watching the wrong syscall. */
+void *
+my_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
+{
+    void *r = mmap(addr, length, prot, flags, fd, offset);
+    if (trace_files_enabled()) {
+        static int n;
+        if (n++ < 200)
+            fprintf(stderr, "[MMAP] fd=%d off=0x%lx len=0x%lx prot=%d flags=0x%x -> %p\n",
+                    fd, (unsigned long)offset, (unsigned long)length, prot, flags, r);
+    }
+    return r;
+}
+
 FILE *
 
 my_fopen(__const char *__restrict __filename, __const char *__restrict __modes)
@@ -254,6 +314,14 @@ my_fputs(__const char *__restrict __s, FILE *__restrict __stream)
 size_t
 my_fread(void *__restrict __ptr, size_t __size, size_t __n, FILE *__restrict __stream)
 {
+    /* account streamed reads that go through stdio too */
+    {
+        FILE *f_ = IS_STDIO_FILE(__stream) ? TO_STDIO_FILE(__stream) : __stream;
+        long pos_ = ftell(f_);
+        size_t r_ = fread(__ptr, __size, __n, f_);
+        if (pos_ >= 0) { acct_seek(fileno(f_), pos_); acct_read(fileno(f_), (long)(r_ * __size)); }
+        return r_;
+    }
     WRAPPERS_DEBUG_PRINTF("fread(%x, %d, %d, %x)\n", __ptr, __size, __n, __stream);
     size_t result;
     if (IS_STDIO_FILE(__stream))
@@ -311,6 +379,8 @@ my_frexp(double __x, int *__exponent)
  * decoding read has to seek there. No seeks into the range means the engine
  * never got as far as reading the clip - a very different bug from a decoder
  * that reads it and fails. */
+void apkenv_stackscan(const char *what);
+
 static int
 trace_seek_range(long off)
 {
@@ -325,6 +395,12 @@ trace_seek_range(long off)
         return 0;
     if (n++ < 40)
         fprintf(stderr, "[SEEK] into watched range: 0x%lx\n", off);
+    /* WHO seeks there: the engine's call chain for the first two hits. This is
+     * the same stack-scan that located the renderer-select branch; it turns
+     * "the file is read once and nothing follows" into concrete libunity
+     * offsets to disassemble. */
+    if (n <= 2)
+        apkenv_stackscan("seek-into-watched-range");
     else if ((n % 500) == 0)
         fprintf(stderr, "[SEEK] into watched range: %d seeks so far\n", n);
     return 1;
@@ -544,6 +620,7 @@ __off_t
 my_lseek(int __fd, __off_t __offset, int __whence)
 {
     if (__whence == SEEK_SET) trace_seek_range((long)__offset);
+    if (__whence == SEEK_SET) acct_seek(__fd, (long)__offset);
     WRAPPERS_DEBUG_PRINTF("lseek()\n", __fd, __offset, __whence);
     return lseek(__fd, __offset, __whence);
 }
@@ -640,7 +717,7 @@ ssize_t
 my_read(int __fd, void *__buf, size_t __nbytes)
 {
     WRAPPERS_DEBUG_PRINTF("read()\n", __fd, __buf, __nbytes);
-    return read(__fd, __buf, __nbytes);
+    { ssize_t r_ = read(__fd, __buf, __nbytes); acct_read(__fd, (long)r_); return r_; }
 }
 void *
 my_realloc(void *__ptr, size_t __size)

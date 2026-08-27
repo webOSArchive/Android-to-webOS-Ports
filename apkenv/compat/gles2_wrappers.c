@@ -513,6 +513,8 @@ gles2_shader_src_store(GLuint shader, GLsizei count, const char **string, const 
  * one at runtime. Log the first use of a few decisive entry points, once each,
  * from BOTH wrapper tables (probing only one table is what produced a
  * confidently wrong answer earlier in this port). */
+unsigned long apkenv_gl_draws;
+
 void apkenv_glpath_mark(const char *what)
 {
     static const char *seen[16];
@@ -701,6 +703,7 @@ void
 my_gles2_glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
     apkenv_glpath_mark("glDrawArrays via ES2 wrapper");
+    apkenv_gl_draws++;
     if (gp_enabled()) { gp_draws2++; gp_verts2 += (unsigned long)count; }
 
     WRAPPERS_DEBUG_PRINTF("glDrawArrays()\n", mode, first, count);
@@ -710,6 +713,7 @@ void
 my_gles2_glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices)
 {
     apkenv_glpath_mark("glDrawElements via ES2 wrapper");
+    apkenv_gl_draws++;
     if (gp_enabled()) { gp_draws2++; gp_verts2 += (unsigned long)count; }
 
     WRAPPERS_DEBUG_PRINTF("glDrawElements()\n", mode, count, type, indices);

@@ -485,6 +485,18 @@ void hooks_init(void)
 #endif
 
     libc_wrappers_init();
+
+    {   /* prove the table answers for names that keep logging 'Unimplemented' */
+        static const char *chk[] = { "pthread_cond_timeout_np",
+                                     "__pthread_cond_timedwait_relative",
+                                     "__pthread_cond_timedwait", "pthread_create" };
+        size_t k;
+        for (k = 0; k < sizeof(chk)/sizeof(chk[0]); k++) {
+            struct _hook key, *e; key.name = chk[k]; key.func = NULL;
+            e = bsearch(&key, hooks, hooks_count, HOOK_SIZE, hook_cmp);
+            printf("[HOOKCHK] %s -> %p (count=%d)\n", chk[k], e ? e->func : NULL, hooks_count);
+        }
+    }
 }
 
 static void no_hook(void)

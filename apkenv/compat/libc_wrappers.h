@@ -316,3 +316,5 @@ struct bionic_sigaction;
 int apkenv_my_sigaction(int sig, const struct bionic_sigaction *act, struct bionic_sigaction *oldact);
 int apkenv_my_pthread_sigmask(int how, const unsigned long *set, unsigned long *oset);
 int apkenv_my_sigprocmask(int how, const unsigned long *set, unsigned long *oset);
+void *my_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
+

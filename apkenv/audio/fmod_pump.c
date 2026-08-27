@@ -34,6 +34,42 @@ static int            g_started;
 static pthread_t      g_thread;
 
 /* The decompiled FMODAudioDevice.run(), in C. */
+
+/* Thread sampler (APKENV_THREAD_SAMPLE=1): every ~5 s, list every thread in
+ * the process with the syscall it is blocked in (/proc/self/task/<tid>/syscall
+ * gives the number and arguments) and its state. This answers, without a
+ * debugger the jail forbids, "what is FMOD's thread waiting on" - a stream
+ * that is primed once and never refilled is a thread that never wakes. */
+#include <dirent.h>
+static void
+apkenv_sample_threads(void)
+{
+    DIR *d = opendir("/proc/self/task");
+    struct dirent *e;
+    if (d == NULL) return;
+    fprintf(stderr, "[THREADS] ---- sample ----\n");
+    while ((e = readdir(d)) != NULL) {
+        char path[128], buf[256], comm[64] = "?", st[16] = "?";
+        FILE *f;
+        if (e->d_name[0] == '.') continue;
+        snprintf(path, sizeof(path), "/proc/self/task/%s/comm", e->d_name);
+        if ((f = fopen(path, "r")) != NULL) { if (fgets(comm, sizeof(comm), f)) comm[strcspn(comm, "\n")] = 0; fclose(f); }
+        snprintf(path, sizeof(path), "/proc/self/task/%s/stat", e->d_name);
+        if ((f = fopen(path, "r")) != NULL) {
+            if (fgets(buf, sizeof(buf), f)) { char *p = strrchr(buf, ')'); if (p && p[1]) { st[0] = p[2]; st[1] = 0; } }
+            fclose(f);
+        }
+        snprintf(path, sizeof(path), "/proc/self/task/%s/syscall", e->d_name);
+        buf[0] = 0;
+        if ((f = fopen(path, "r")) != NULL) { if (fgets(buf, sizeof(buf), f)) buf[strcspn(buf, "\n")] = 0; fclose(f); }
+        snprintf(path, sizeof(path), "/proc/self/task/%s/wchan", e->d_name);
+        { char wc[64] = ""; if ((f = fopen(path, "r")) != NULL) { if (fgets(wc, sizeof(wc), f)) wc[strcspn(wc, "\n")] = 0; fclose(f); }
+          fprintf(stderr, "[THREADS] tid=%s state=%s comm=%s wchan=%s syscall=%s\n",
+                  e->d_name, st, comm, wc, buf); }
+    }
+    closedir(d);
+}
+
 static void *
 fmod_pump_thread(void *arg)
 {
@@ -122,6 +158,9 @@ fmod_pump_thread(void *arg)
                 }
 
                 apkenv_audiotrack_write(track, chunk, chunk_bytes); /* blocks = pacing */
+                if (getenv("APKENV_THREAD_SAMPLE") != NULL) {
+                    static int c; if (++c % 230 == 0) apkenv_sample_threads();
+                }
             } else {
                 initialised = 0;   /* mixer stopped; rebuild on next start */
             }

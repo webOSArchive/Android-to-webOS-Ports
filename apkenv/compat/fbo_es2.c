@@ -261,6 +261,20 @@ apkenv_fbo_es2_present(void)
 
     global.platform->get_size(&sw, &sh);
 
+    {   /* who owns the framebuffer when the frame ends? if it is 0, something
+         * bound the window directly, bypassing the redirect */
+        static int n; GLint cur = -1;
+        extern unsigned long apkenv_gl_draws;
+        static unsigned long last_draws;
+        n++;
+        if (n <= 12 || (n % 100) == 0) {
+            f.glGetIntegerv(GL_FRAMEBUFFER_BINDING, &cur);
+            fprintf(stderr, "[FBO2] present #%d: draws since last present=%lu, FRAMEBUFFER_BINDING=%d\n",
+                    n, apkenv_gl_draws - last_draws, cur);
+        }
+        last_draws = apkenv_gl_draws;
+    }
+
     /* ---- save everything we touch ---------------------------------------
      * The engine sets GL state once and assumes it persists; a present that
      * leaves the program, texture or attrib arrays changed corrupts the next

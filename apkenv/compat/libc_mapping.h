@@ -114,7 +114,7 @@
 {"clearerr", my_clearerr},
 
 {"ioctl", ioctl},
-{"mmap", mmap},
+{"mmap", my_mmap},
 {"munmap", munmap},
 {"poll", poll},
 
