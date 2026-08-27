@@ -40,6 +40,8 @@
 #include <sys/time.h>
 #include <time.h>
 #include "../accelerometer/accelerometer.h"
+
+int apkenv_fbo_es2_rotation(void);   /* compat/fbo_es2.c */
 #include "../compat/hooks.h"
 #include <errno.h>
 #include <sys/mman.h>
@@ -489,13 +491,36 @@ unity_jnienv_CallVoidMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
 
     un_trace_unhandled("void", p2);
 }
+/* ---- portrait ---------------------------------------------------------------
+ * Temple Run 2's manifest declares portrait on every Unity activity, and its
+ * UI is authored for it: on the landscape panel the settings screen overlaps
+ * itself. The engine is told it has a 768x1024 portrait surface and renders
+ * into an offscreen FBO of that size; compat/fbo_es2.c rotates it onto the
+ * 1024x768 panel at present time. 768x1024 rotated is exactly 1024x768, so it
+ * fills the panel with no letterboxing and no scaling.
+ *
+ * APKENV_UNITY_PORTRAIT=0 goes back to native landscape. */
+static int
+un_portrait(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("APKENV_UNITY_PORTRAIT");
+        on = (e == NULL || e[0] != '0');
+    }
+    return on;
+}
+
 static jint
 unity_jnienv_CallIntMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
 {
     if (strcmp(p2->name,"getDeviceOrientation")==0) return 0;
+    /* Surface.ROTATION_0: the surface we hand the engine is already the right
+     * way up for the orientation we report, because we rotate at present time. */
     /* 0 = ORIENTATION_UNDEFINED; the TouchPad is landscape-native and apkenv
      * already owns rotation, so never report a change here. */
-    if (strcmp(p2->name,"getOrientation")==0) return 0;
+    if (strcmp(p2->name,"getOrientation")==0)
+        return un_portrait() ? 1 : 0;   /* Configuration.ORIENTATION_PORTRAIT */
     /* Bytes of RAM Unity may assume it can use. The device has ~940 MB total;
      * report a conservative 256 MB so Unity picks modest texture/heap budgets. */
     if (strcmp(p2->name,"getTotalMemory")==0) return 256 * 1024 * 1024;
@@ -646,6 +671,11 @@ unity_try_init(struct SupportModule *self)
 
     /* Unity 3.5 links both GLES libs but draws through shaders only. */
     GLOBAL_M->module_hacks->prefer_gles_version = 2;
+    if (un_portrait()) {
+        GLOBAL_M->module_hacks->render_to_fbo = 1;
+        GLOBAL_M->module_hacks->fbo_w = 768;
+        GLOBAL_M->module_hacks->fbo_h = 1024;
+    }
 
     self->override_env.GetStaticFieldID = unity_jnienv_GetStaticFieldID;
     self->override_env.GetStaticObjectField = unity_jnienv_GetStaticObjectField;
@@ -696,6 +726,7 @@ unity_jnienv_GetStringUTFChars(JNIEnv *env, jstring string, jboolean *isCopy)
     if (isCopy) *isCopy = JNI_TRUE;
     return strdup(str->data ? str->data : "");
 }
+
 
 /* ---- force Unity's GLES2 graphics device ----------------------------------
  * Temple Run 2 ships 8 shaders whose ONLY subprograms are GLSL ES 2.0 (no
@@ -845,6 +876,16 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
     self->priv->nativeFile(ENV_M,GLOBAL_M,file);
     if (self->priv->initJni) { un_hookcheck("initJni"); fprintf(stderr, "[UN] initJni\n"); self->priv->initJni(ENV_M,GLOBAL_M); }
     if (self->priv->InitPlayerPrefs) { un_hookcheck("InitPlayerPrefs"); fprintf(stderr, "[UN] InitPlayerPrefs\n"); self->priv->InitPlayerPrefs(ENV_M,GLOBAL_M); }
+    /* Swap to the portrait surface the engine will believe in. Everything
+     * downstream (nativeInit, nativeResize, the touch mapping) must use the
+     * SAME pair, or the engine lays out for one size and receives input in
+     * another. */
+    if (un_portrait()) {
+        width  = GLOBAL_M->module_hacks->fbo_w;
+        height = GLOBAL_M->module_hacks->fbo_h;
+        fprintf(stderr, "[UN] portrait: presenting a %dx%d surface to the engine\n",
+                width, height);
+    }
     un_screen_w = width; un_screen_h = height;
     un_force_gles2_device((void *)self->priv->nativeInit);
 
@@ -925,6 +966,34 @@ unity_input(struct SupportModule *self, int event, int x, int y, int finger)
      * is a source the engine never sees on a real device. */
     enum { ANDROID_SOURCE_TOUCHSCREEN = 0x1002 };
     int action = (event == ACTION_DOWN) ? 0 : (event == ACTION_UP) ? 1 : 2;
+
+    /* Rotate the touch into the engine's portrait surface. SDL reports real
+     * panel pixels (landscape); the engine believes it owns a 768x1024 surface
+     * that we rotate at present time, so input must travel the same rotation or
+     * the player taps one place and the game reacts somewhere else.
+     *
+     * Derived from the present quad's texcoords rather than by trial: for the
+     * 90-degree case screen-bottom-left samples the FBO's top-left, which
+     * gives u = 1 - sy/sh and v = 1 - sx/sw, and the engine's y runs downward
+     * from the top while GL's v runs up. */
+    if (un_portrait()) {
+        int sw = 0, sh = 0;
+        int fw = GLOBAL_M->module_hacks->fbo_w, fh = GLOBAL_M->module_hacks->fbo_h;
+        GLOBAL_M->platform->get_size(&sw, &sh);
+        if (sw > 0 && sh > 0 && fw > 0 && fh > 0) {
+            int px, py;
+            if (apkenv_fbo_es2_rotation() == 3) {          /* 270 degrees */
+                px = (int)((float)fw * (float)y / (float)sh);
+                py = (int)((float)fh * (1.0f - (float)x / (float)sw));
+            } else {                                        /* 90 degrees */
+                px = (int)((float)fw * (1.0f - (float)y / (float)sh));
+                py = (int)((float)fh * ((float)x / (float)sw));
+            }
+            if (px < 0) px = 0; else if (px > fw - 1) px = fw - 1;
+            if (py < 0) py = 0; else if (py > fh - 1) py = fh - 1;
+            x = px; y = py;
+        }
+    }
     jlong t = un_now_ms();
     static int logged = 0;
     /* Bounded: this runs for the whole session and writes to /media/internal. */
@@ -1027,7 +1096,28 @@ un_feed_tilt(struct SupportModule *self)
          * gravity - a constant value, i.e. a constant drift, whose direction
          * flipped with how the tablet was held. Row 0 puts the roll on Y and
          * parks gravity on X; invy fixes the mirror. */
-        row = 0; invx = 0; invy = 1;
+        /* The sensor frame rotates with the device, so the tilt mapping is
+         * coupled to BOTH the presented orientation and which way we rotate the
+         * panel (APKENV_FBO_ROT).
+         *
+         * Landscape: row 0 + inverted Y, measured on device - the inversion was
+         * compensating for the game being portrait-built while held landscape.
+         * Portrait: the device is now held the way the game was designed for,
+         * so the host's natural portrait mapping should apply without the
+         * compensation. Verify by tilting; /media/internal/apkenv-tilt.conf
+         * overrides both without a rebuild. */
+        if (un_portrait()) {
+            /* Confirmed on device: holding the tablet turned for portrait moves
+             * the roll from the sensor's Y to its X, so the steering axis has to
+             * come from v[0] - rows 1 and 3 - and row 3 + inverted Y is the one
+             * that steers the right way. If the panel is rotated the other way
+             * (APKENV_FBO_ROT=3) the player holds the tablet the other way up,
+             * which mirrors it again. */
+            row = 3; invx = 0; invy = 1;
+            if (apkenv_fbo_es2_rotation() == 3) invy = 0;
+        } else {
+            row = 0; invx = 0; invy = 1;
+        }
         if ((e = getenv("APKENV_UNITY_TILT_ROW")) != NULL) row = atoi(e) & 3;
         if ((e = getenv("APKENV_UNITY_TILT_INVX")) != NULL) invx = (*e != '0');
         if ((e = getenv("APKENV_UNITY_TILT_INVY")) != NULL) invy = (*e != '0');
@@ -1043,7 +1133,8 @@ un_feed_tilt(struct SupportModule *self)
             fclose(f);
             fprintf(stderr, "[UN-TILT] /media/internal/apkenv-tilt.conf applied\n");
         }
-        fprintf(stderr, "[UN-TILT] row=%d invx=%d invy=%d\n", row, invx, invy);
+        fprintf(stderr, "[UN-TILT] row=%d invx=%d invy=%d (portrait=%d panel-rot=%d)\n",
+                row, invx, invy, un_portrait(), apkenv_fbo_es2_rotation());
     }
 
     if (!apkenv_accelerometer_get(&v[0], &v[1], &v[2]))

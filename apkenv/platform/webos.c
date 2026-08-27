@@ -39,6 +39,8 @@
 void apkenv_egl_probe(const char *tag);
 void apkenv_egl_warmup(void);
 void apkenv_gles1_bind_driver(int gles_version);
+void apkenv_fbo_es2_bind_screen(void);
+void apkenv_fbo_es2_bind_offscreen(void);
 
 struct PlatformPriv {
     SDL_Surface *screen;
@@ -309,6 +311,10 @@ webos_snapshot(unsigned long frame)
     }
     if (read_pixels == NULL) return;
 
+    /* Capture what the PANEL shows, not the offscreen portrait target that is
+     * bound for the next frame. */
+    apkenv_fbo_es2_bind_screen();
+
     px = malloc((size_t)w * h * 4);
     if (px == NULL) return;
     /* GL_RGBA / GL_UNSIGNED_BYTE is the one combination ES guarantees. */
@@ -327,6 +333,7 @@ webos_snapshot(unsigned long frame)
     }
     fclose(f);
     free(px);
+    apkenv_fbo_es2_bind_offscreen();
     fprintf(stderr, "[SNAP] wrote %s (%dx%d)\n", path, w, h);
 }
 

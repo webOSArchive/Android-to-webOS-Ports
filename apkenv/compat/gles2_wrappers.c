@@ -356,11 +356,25 @@ my_gles2_glBindBuffer(GLenum target, GLuint buffer)
     functions.glBindBuffer(target, buffer);
 }
 extern int apkenv_bound_fbo;   /* defined in gles_wrappers.c */
+extern struct ModuleHacks global_module_hacks;
+extern GLuint apkenv_fbo_es2_ensure(void);   /* compat/fbo_es2.c */
 void
 my_gles2_glBindFramebuffer(GLenum target, GLuint framebuffer)
 {
     WRAPPERS_DEBUG_PRINTF("glBindFramebuffer()\n", target, framebuffer);
     apkenv_bound_fbo = framebuffer;   /* gate screen-rotation hacks to fb 0 */
+
+    /* Portrait games render into an offscreen FBO that we rotate at present
+     * time; the engine must not know. Hand it ours whenever it asks for the
+     * window framebuffer. (Same trick as my_glBindFramebufferOES on the ES1
+     * path - see compat/fbo_es2.c.) */
+    if (global_module_hacks.render_to_fbo) {
+        GLuint ours = apkenv_fbo_es2_ensure();
+        if (ours != 0 && framebuffer == 0) {
+            functions.glBindFramebuffer(target, ours);
+            return;
+        }
+    }
     functions.glBindFramebuffer(target, framebuffer);
 }
 void

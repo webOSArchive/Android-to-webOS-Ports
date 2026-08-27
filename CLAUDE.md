@@ -28,9 +28,9 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
   icon with audio, centered letterbox; `apkenv/packaging/out/com.apkenv.pvzhd_1.0.1_all.ipk`.
   Full trail: `plan/PVZ-HD-menu-freeze.md`. Module: `apkenv/modules/marmalade.c`.
 
-- **Temple Run 2 (Unity 3.5 + Mono) — FULLY PLAYABLE (2026-08-27):** `com.apkenv.templerun2` 1.0.4
-  — launcher icon, touch menus, textured 3D, and tilt steering. Landscape is final (the game adapts
-  and looks right; the portrait/FBO work is cancelled, not deferred). The four fixes that got it
+- **Temple Run 2 (Unity 3.5 + Mono) — FULLY PLAYABLE (2026-08-27):** `com.apkenv.templerun2` 1.1.2
+  — launcher icon, touch menus, textured 3D, swipe, tilt steering, and **portrait** via an ES2
+  render-to-FBO rotated present (`apkenv/compat/fbo_es2.c`; 768x1024 rotated is exactly 1024x768). The four fixes that got it
   there: `nativeTouch`'s trailing int is the MotionEvent **source** (`0x1002`); **an ES2 context is
   refused only when it is the first context in the process** (`apkenv_egl_warmup()` primes with
   ES1); Unity picked its **fixed-function ES1 device** via one global byte at `libunity+0x2d2f74`

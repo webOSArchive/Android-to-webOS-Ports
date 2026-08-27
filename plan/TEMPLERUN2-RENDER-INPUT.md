@@ -409,6 +409,57 @@ the same four orientation rows the real Java host supports, so no setting is a b
 chosen one is exactly what Unity would receive on real hardware in that orientation. The file
 remains supported as an override; the shipped defaults need it absent.
 
-**Status: Temple Run 2 is fully playable** - menu, touch, textured 3D, and tilt steering.
+**Status (superseded below): Temple Run 2 is fully playable** - menu, touch, textured 3D, and tilt steering.
 `com.apkenv.templerun2` **1.0.4**.
+
+---
+
+# Portrait (2026-08-27) - DONE, and it was the right call
+
+Landscape "worked", but the settings screen overlapped itself: the UI is authored for the
+portrait the manifest declares. Rendering portrait fixed the layout and is what the game
+actually is. Confirmed on device: rotated correctly, no overlap, menus right, **and it still
+feels smooth** despite the extra blit.
+
+**It fits exactly.** 768x1024 rotated 90 degrees is 1024x768 - the panel's native size - so the
+portrait image fills the screen with no letterboxing and no scaling.
+
+**`compat/fbo_es2.c`** is the ES2 twin of the ES1 render-to-FBO path WMW has used since Stage 3.
+The old one could not be reused at all: it is fixed-function (matrix stack, `glTexEnv`, client
+arrays) and Unity runs on the GLES2 device. The new one is a texture + depth renderbuffer + a
+two-attribute shader blit, with the rotation baked into the quad's texcoords.
+`apkenv_fbo_present()` dispatches on `apkenv_active_gles_version()`, so both games keep working.
+
+**What makes it invisible to the engine:** `my_gles2_glBindFramebuffer` redirects every bind of
+framebuffer 0 to our offscreen target, exactly as `my_glBindFramebufferOES` does on the ES1 path.
+The engine believes it owns the screen.
+
+**State save/restore is the whole risk.** The engine sets GL state once and assumes it survives;
+a present that leaves the program, texture, attrib arrays or buffer bindings changed corrupts the
+NEXT frame in ways that look like a game bug. `apkenv_fbo_es2_present()` saves and restores
+program, active texture, 2D binding, array/element buffer bindings, viewport, six enables, and
+the full vertex-attrib state (enabled/size/type/normalized/stride/buffer/pointer) for the two
+attributes it uses.
+
+**Touch** is rotated into the portrait surface in `modules/unity.c`, derived from the present
+quad's texcoords rather than by trial: for the 90-degree case screen-bottom-left samples the
+FBO's top-left, giving `u = 1 - sy/sh`, `v = 1 - sx/sw`, with the engine's Y running down while
+GL's V runs up.
+
+**Tilt has to rotate too** (the user caught this before it shipped). The sensor frame turns with
+the device: holding the tablet for portrait moves the roll from the sensor's Y to its X, so the
+steering axis must come from `v[0]` - rows 1 and 3 - and **row 3 + inverted Y** is the one that
+steers correctly. It is now coupled to the panel rotation in code: with `APKENV_FBO_ROT=3` the
+player holds the tablet the other way up, so the sign flips back automatically. Landscape keeps
+its own measured mapping (`row=0, invy=1`), so `APKENV_UNITY_PORTRAIT=0` still behaves as before.
+
+**A trap that cost a confusing screenshot:** after present we leave the offscreen FBO bound for
+the next frame, so `glReadPixels` in the frame grab captured the 768-wide portrait target into a
+1024-wide buffer - a tiled, skewed mess that looks exactly like a broken renderer. The grab now
+binds the window framebuffer first. **`PDL_SetOrientation` is not a shortcut here**: it only
+tells the system what orientation you are drawing in (so notifications match), it does not rotate
+the surface.
+
+**Shipped: `com.apkenv.templerun2` 1.1.2** - portrait, touch, tilt, textured 3D, swipe. Defaults
+verified with the override file deleted. Remaining: **music** (see the audio section above).
 

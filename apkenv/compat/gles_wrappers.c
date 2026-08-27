@@ -290,6 +290,7 @@ my_glAlphaFunc(GLenum func, GLclampf ref)
 #include "hooks.h"
 
 void apkenv_glpath_mark(const char *what);
+void apkenv_fbo_es2_present(void);   /* compat/fbo_es2.c */
 
 /* Where in the ENGINE does an ES1-only call come from?  The engine builds its
  * fixed-function device under an ES2 context and nothing in the log says why;
@@ -633,6 +634,12 @@ apkenv_fbo_ensure(void)
 void
 apkenv_fbo_present(void)
 {
+    /* Two implementations, one per renderer: this fixed-function one, and the
+     * shader one in compat/fbo_es2.c. Dispatch on the context we actually got. */
+    if (apkenv_active_gles_version() == 2) {
+        apkenv_fbo_es2_present();
+        return;
+    }
     if (!global_module_hacks.render_to_fbo || !apkenv_fbo_ready)
         return;
 
