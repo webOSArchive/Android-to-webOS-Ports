@@ -38,6 +38,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/time.h>
+#include <time.h>
 #include <limits.h>
 extern void apkenv_gl_probe_frame(unsigned long frame);
 
@@ -772,21 +773,39 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
     if (!(getenv("APKENV_UNITY_AUDIO") && getenv("APKENV_UNITY_AUDIO")[0]=='0'))
         apkenv_fmod_pump_start(GLOBAL_M);
 }
+/* Android's MotionEvent.getEventTime() is SystemClock.uptimeMillis(), a
+ * monotonic clock. Use the same base here so every time we hand the engine
+ * comes from ONE clock (Stage T, plan/TEMPLERUN2-RENDER-INPUT.md). */
 static jlong
 un_now_ms(void)
 {
-    struct timeval tv; gettimeofday(&tv, NULL);
-    return (jlong)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (jlong)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 static void
 unity_input(struct SupportModule *self, int event, int x, int y, int finger)
 {
-    /* UnityPlayer.dispatchTouchEvent -> nativeTouch(pointerId, x, y, action&0xff, eventTime, extra)
-     * Android actions: 0=DOWN 1=UP 2=MOVE */
+    /* UnityPlayer.dispatchTouchEvent(pointerIndex, rawAction, pointerId, x, y, eventTime, source)
+     *   -> nativeTouch(pointerId, x, y, action&0xff, eventTime, source)
+     * Android actions: 0=DOWN 1=UP 2=MOVE. The trailing int is the MotionEvent
+     * SOURCE: UnityPlayer.onTouchEvent hard-codes 0x1002 (InputDevice.SOURCE_TOUCHSCREEN)
+     * when no touchpad handler is installed. Passing 0 (what we did until 0.1.2)
+     * is a source the engine never sees on a real device. */
+    enum { ANDROID_SOURCE_TOUCHSCREEN = 0x1002 };
     int action = (event == ACTION_DOWN) ? 0 : (event == ACTION_UP) ? 1 : 2;
+    jlong t = un_now_ms();
+    static int logged = 0;
+    if (logged < 200 || action != 2) {   /* every DOWN/UP; first 200 MOVEs */
+        fprintf(stderr, "[UN-TOUCH] id=%d action=%d x=%d y=%d t=%lld src=0x%x %s\n",
+                finger, action, x, y, (long long)t, ANDROID_SOURCE_TOUCHSCREEN,
+                self->priv->nativeTouch ? "" : "(nativeTouch NULL - dropped)");
+        logged++;
+    }
     if (self->priv->nativeTouch)
-        self->priv->nativeTouch(ENV_M, GLOBAL_M, finger, (jfloat)x, (jfloat)y, action, un_now_ms(), 0);
+        self->priv->nativeTouch(ENV_M, GLOBAL_M, finger, (jfloat)x, (jfloat)y, action, t,
+                                ANDROID_SOURCE_TOUCHSCREEN);
 }
 
 static void
