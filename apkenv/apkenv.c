@@ -1143,12 +1143,27 @@ int main(int argc, char **argv)
 
     /* figure out GLES version to use */
     int gles_version = 1;
+    const char *gles_env = getenv("APKENV_GLES_VERSION");
 
     if (global.loader_seen_glesv1 && global.loader_seen_glesv2) {
-        printf("Warning: app uses both GLESv1 and GLESv2 libs\n");
-        /* TODO: perhaps consult the module what to use here? */
+        /* Importing both proves nothing about which one the engine draws with:
+         * Unity 3.5 links GLESv1 and GLESv2 but renders entirely through
+         * shaders, and handing it the fixed-function context yields a screen
+         * cleared to the camera background with no geometry on it. Let the
+         * module say what its engine actually wants. */
+        if (global_module_hacks.prefer_gles_version != 0) {
+            gles_version = global_module_hacks.prefer_gles_version;
+            printf("App uses both GLESv1 and GLESv2 libs; module prefers GLESv%d\n",
+                   gles_version);
+        } else {
+            printf("Warning: app uses both GLESv1 and GLESv2 libs\n");
+        }
     } else if (global.loader_seen_glesv2) {
         gles_version = 2;
+    }
+    if (gles_env != NULL && (*gles_env == '1' || *gles_env == '2')) {
+        gles_version = *gles_env - '0';
+        printf("APKENV_GLES_VERSION overrides GLES version -> %d\n", gles_version);
     }
 #if !defined(APKENV_GLES)
     gles_version = 2;

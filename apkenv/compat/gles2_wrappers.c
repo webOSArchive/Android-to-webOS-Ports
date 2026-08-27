@@ -16,6 +16,12 @@
 
 #include <pthread.h>
 #include <dlfcn.h>
+/* shared with compat/gles_wrappers.c - glViewport/glDrawArrays exist in BOTH
+ * hook tables, so a probe that only instruments one of them is blind. */
+extern unsigned long gp_draws, gp_verts, gp_draws2, gp_verts2;
+extern int gp_vp[4], gp_vp2[4];
+extern int gp_enabled(void);
+
 
 struct gles2_functions {
     void         (*glActiveTexture)(GLenum texture);
@@ -483,6 +489,17 @@ my_gles2_glCreateProgram()
 GLuint
 my_gles2_glCreateShader(GLenum type)
 {
+    /* One-shot: which renderer did the engine actually choose? Unity 3.5 links
+     * BOTH a fixed-function and a shader renderer; if this fires, it picked the
+     * GLES2 one, and on a TouchPad (ES1.1-only through SDL) nothing will draw. */
+    static int announced = 0;
+    if (!announced) {
+        announced = 1;
+        fprintf(stderr, "[GLES2] engine called glCreateShader -> it chose the SHADER renderer\n");
+        fprintf(stderr, "[GLES2] GL_VERSION=%s\n  GL_RENDERER=%s\n",
+                (const char *)glGetString(GL_VERSION),
+                (const char *)glGetString(GL_RENDERER));
+    }
     WRAPPERS_DEBUG_PRINTF("glCreateShader()\n", type);
     return functions.glCreateShader(type);
 }
@@ -567,12 +584,16 @@ my_gles2_glDisableVertexAttribArray(GLuint index)
 void
 my_gles2_glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
+    if (gp_enabled()) { gp_draws2++; gp_verts2 += (unsigned long)count; }
+
     WRAPPERS_DEBUG_PRINTF("glDrawArrays()\n", mode, first, count);
     functions.glDrawArrays(mode, first, count);
 }
 void
 my_gles2_glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices)
 {
+    if (gp_enabled()) { gp_draws2++; gp_verts2 += (unsigned long)count; }
+
     WRAPPERS_DEBUG_PRINTF("glDrawElements()\n", mode, count, type, indices);
     functions.glDrawElements(mode, count, type, indices);
 }
@@ -1173,6 +1194,8 @@ my_gles2_glVertexAttribPointer(GLuint indx, GLint size, GLenum type, GLboolean n
 void
 my_gles2_glViewport(GLint x, GLint y, GLsizei width, GLsizei height)
 {
+    if (gp_enabled()) { gp_vp2[0]=x; gp_vp2[1]=y; gp_vp2[2]=width; gp_vp2[3]=height; }
+
     WRAPPERS_DEBUG_PRINTF("glViewport()\n", x, y, width, height);
     functions.glViewport(x, y, width, height);
 }

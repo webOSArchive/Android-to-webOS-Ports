@@ -38,6 +38,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/time.h>
+#include <limits.h>
+extern void apkenv_gl_probe_frame(unsigned long frame);
 
 /* engine->host call-out tracer (PORTING-PLAYBOOK.md section 3) */
 #define UN_TRACE_MAX 96
@@ -93,6 +95,8 @@ static void *un_hook_watch(void *arg)
     return NULL;
 }
 static const char *un_home = "";
+/* Cached from init() so the JNI handlers can answer getDisplaySize(). */
+static int un_screen_w = 0, un_screen_h = 0;
 static const char *un_pkg = "com.unity3d.player";
 
 
@@ -121,6 +125,7 @@ jobject unity_jnienv_CallObjectMethodV(JNIEnv* env, jobject p1, jmethodID p2, va
 jobject unity_jnienv_CallStaticObjectMethod(JNIEnv* env, jclass p1, jmethodID p2, ...) SOFTFP;
 jobject unity_jnienv_CallStaticObjectMethodV(JNIEnv* env, jclass p1, jmethodID p2, va_list p3) SOFTFP;
 static jobject unity_call_static_object(JNIEnv *env, jclass p1, jmethodID p2) SOFTFP;
+static jobject unity_call_object(JNIEnv *env, jmethodID method, va_list *ap) SOFTFP;
 const char * unity_jnienv_GetStringUTFChars(JNIEnv *env, jstring string, jboolean *isCopy) SOFTFP;
 
 
@@ -164,6 +169,157 @@ jclass unity_jnienv_GetObjectClass(JNIEnv *p0, jobject p1)
 }
 
 
+/* ---------------------------------------------------------------------------
+ * PlayerPrefs (com.unity3d.player.UnityPlayer's Java preference store).
+ *
+ * Unity's managed PlayerPrefs.SetX() THROWS PlayerPrefsException when the Java
+ * side returns false, and the game calls it from AudioManager.Awake(),
+ * GameController.Awake() and Promotion.BeginPromo() - so leaving these
+ * unimplemented (returning 0) aborts the game's own startup objects. This is a
+ * real store, persisted next to the rest of the app's data, so settings and
+ * progress survive a restart.
+ * ------------------------------------------------------------------------- */
+enum un_pref_type { UN_PREF_INT, UN_PREF_FLOAT, UN_PREF_STRING };
+
+struct un_pref {
+    char *key;
+    enum un_pref_type type;
+    int i;
+    float f;
+    char *s;
+};
+
+#define UN_PREFS_MAX 512
+static struct un_pref un_prefs[UN_PREFS_MAX];
+static int un_prefs_n = 0;
+static char un_prefs_path[PATH_MAX];
+static int un_prefs_dirty = 0;
+
+static struct un_pref *
+un_pref_find(const char *key)
+{
+    int i;
+    if (key == NULL)
+        return NULL;
+    for (i = 0; i < un_prefs_n; i++)
+        if (strcmp(un_prefs[i].key, key) == 0)
+            return &un_prefs[i];
+    return NULL;
+}
+
+static struct un_pref *
+un_pref_slot(const char *key)
+{
+    struct un_pref *p = un_pref_find(key);
+    if (p != NULL) {
+        if (p->type == UN_PREF_STRING) { free(p->s); p->s = NULL; }
+        return p;
+    }
+    if (un_prefs_n >= UN_PREFS_MAX) {
+        fprintf(stderr, "[UN-PREF] table full (%d), dropping '%s'\n", UN_PREFS_MAX, key);
+        return NULL;
+    }
+    p = &un_prefs[un_prefs_n++];
+    p->key = strdup(key);
+    p->s = NULL;
+    return p;
+}
+
+/* Line format: <type>\t<key>\t<value>. Keys cannot contain a tab (Unity keys
+ * are identifiers), and string values may not contain a newline - they are
+ * escaped on write. */
+static void
+un_prefs_save(void)
+{
+    FILE *f;
+    int i;
+
+    if (!un_prefs_dirty || un_prefs_path[0] == '\0')
+        return;
+
+    f = fopen(un_prefs_path, "w");
+    if (f == NULL) {
+        fprintf(stderr, "[UN-PREF] cannot write %s\n", un_prefs_path);
+        return;
+    }
+    for (i = 0; i < un_prefs_n; i++) {
+        struct un_pref *p = &un_prefs[i];
+        switch (p->type) {
+        case UN_PREF_INT:    fprintf(f, "i\t%s\t%d\n", p->key, p->i); break;
+        case UN_PREF_FLOAT:  fprintf(f, "f\t%s\t%.9g\n", p->key, p->f); break;
+        case UN_PREF_STRING: {
+            const char *c;
+            fprintf(f, "s\t%s\t", p->key);
+            for (c = p->s ? p->s : ""; *c; c++) {
+                if (*c == '\n')      fputs("\\n", f);
+                else if (*c == '\\') fputs("\\\\", f);
+                else                 fputc(*c, f);
+            }
+            fputc('\n', f);
+            break;
+        }
+        }
+    }
+    fclose(f);
+    un_prefs_dirty = 0;
+}
+
+static void
+un_prefs_load(const char *home)
+{
+    FILE *f;
+    char line[4096];
+
+    snprintf(un_prefs_path, sizeof(un_prefs_path), "%s/playerprefs.txt", home);
+    f = fopen(un_prefs_path, "r");
+    if (f == NULL) {
+        fprintf(stderr, "[UN-PREF] no store yet at %s (fresh profile)\n", un_prefs_path);
+        return;
+    }
+    while (fgets(line, sizeof(line), f) != NULL) {
+        char *key, *val, *nl;
+        struct un_pref *p;
+        if ((nl = strchr(line, '\n')) != NULL) *nl = '\0';
+        if (line[0] == '\0' || line[1] != '\t') continue;
+        key = line + 2;
+        val = strchr(key, '\t');
+        if (val == NULL) continue;
+        *val++ = '\0';
+        p = un_pref_slot(key);
+        if (p == NULL) break;
+        switch (line[0]) {
+        case 'i': p->type = UN_PREF_INT;   p->i = atoi(val); break;
+        case 'f': p->type = UN_PREF_FLOAT; p->f = (float)atof(val); break;
+        case 's': {
+            char *r = val, *w = val;
+            while (*r) {
+                if (*r == '\\' && r[1] == 'n')      { *w++ = '\n'; r += 2; }
+                else if (*r == '\\' && r[1] == '\\') { *w++ = '\\'; r += 2; }
+                else                                 { *w++ = *r++; }
+            }
+            *w = '\0';
+            p->type = UN_PREF_STRING; p->s = strdup(val);
+            break;
+        }
+        default: break;
+        }
+    }
+    fclose(f);
+    fprintf(stderr, "[UN-PREF] loaded %d preferences from %s\n", un_prefs_n, un_prefs_path);
+}
+
+/* Unwrap a jstring argument already pulled from a va_list. NULL for the global
+ * sentinel (jni/jnienv.c hands it out for unanswered object calls) so callers
+ * can tell "no value" from "empty string". */
+static const char *
+un_jstr(JNIEnv *env, void *arg)
+{
+    struct dummy_jstring *js = arg;
+    if (js == NULL || (void *)js == (void *)GLOBAL_J(env))
+        return NULL;
+    return js->data;
+}
+
 /* Shared dispatch for the object-returning instance calls.
  *
  * BOTH the "..." and the va_list ("V") entry points must route here. Overriding
@@ -174,8 +330,33 @@ jclass unity_jnienv_GetObjectClass(JNIEnv *p0, jobject p1)
  * SIGSEGV in strlen with no clue as to which host method was really wanted.
  * Returning NULL here instead is both honest and traceable. */
 static jobject
-unity_call_object(JNIEnv *env, jmethodID method)
+unity_call_object(JNIEnv *env, jmethodID method, va_list *ap)
 {
+    /* PlayerPrefs.GetString(key, default) */
+    if (ap != NULL && strcmp(method->name,"GetString")==0) {
+        const char *key = un_jstr(env, va_arg(*ap, void *));
+        const char *def = un_jstr(env, va_arg(*ap, void *));
+        struct un_pref *p = un_pref_find(key);
+        if (p != NULL && p->type == UN_PREF_STRING)
+            return (*env)->NewStringUTF(env, p->s ? p->s : "");
+        return (*env)->NewStringUTF(env, def ? def : "");
+    }
+
+    /* int[]{width,height}. Returning NULL made Unity log
+     * "JNI: Init'd AndroidJavaObject with null ptr!" and fall back to guesses. */
+    if (strcmp(method->name,"getDisplaySize")==0) {
+        jintArray a = (*env)->NewIntArray(env, 2);
+        struct dummy_array *da = (struct dummy_array *)a;
+        if (da != NULL && da->data != NULL) {
+            ((jint *)da->data)[0] = un_screen_w;
+            ((jint *)da->data)[1] = un_screen_h;
+        }
+        return a;
+    }
+    /* No gamepads on a TouchPad: an EMPTY array, not NULL - Unity iterates it. */
+    if (strcmp(method->name,"getConnectedJoysticks")==0)
+        return (*env)->NewIntArray(env, 0);
+
     if (strcmp(method->name,"getPackageCodePath")==0)
         return (*env)->NewStringUTF(env, global->apk_filename);
 
@@ -193,14 +374,19 @@ unity_call_object(JNIEnv *env, jmethodID method)
 
 jobject unity_jnienv_CallObjectMethod(JNIEnv* env, jobject p1, jmethodID p2, ...)
 {
+    jobject r;
+    va_list ap;
     MODULE_DEBUG_PRINTF("CallObjectMethod %x %x\n",p1,p2);
-    return unity_call_object(env, p2);
+    va_start(ap, p2);
+    r = unity_call_object(env, p2, &ap);
+    va_end(ap);
+    return r;
 }
 
 jobject unity_jnienv_CallObjectMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
 {
     MODULE_DEBUG_PRINTF("CallObjectMethodV %s/%s\n", p2->name, p2->sig ? p2->sig : "");
-    return unity_call_object(env, p2);
+    return unity_call_object(env, p2, &p3);
 }
 
 jobject
@@ -242,18 +428,99 @@ unity_jnienv_CallStaticObjectMethodV(JNIEnv* env, jclass p1, jmethodID p2, va_li
 static void
 unity_jnienv_CallVoidMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
 {
+    /* PlayerPrefs.Save()/Flush() - the game's explicit "persist now". */
+    if (strcmp(p2->name,"Flush")==0 || strcmp(p2->name,"Save")==0 ||
+        strcmp(p2->name,"Sync")==0) {
+        un_prefs_save();
+        return;
+    }
+    if (strcmp(p2->name,"DeleteKey")==0) {
+        const char *key = un_jstr(env, va_arg(p3, void *));
+        struct un_pref *pr = un_pref_find(key);
+        if (pr != NULL) {
+            int idx = (int)(pr - un_prefs);
+            free(pr->key);
+            if (pr->type == UN_PREF_STRING) free(pr->s);
+            un_prefs[idx] = un_prefs[--un_prefs_n];
+            un_prefs_dirty = 1;
+        }
+        return;
+    }
+    if (strcmp(p2->name,"DeleteAll")==0) {
+        int i;
+        for (i = 0; i < un_prefs_n; i++) {
+            free(un_prefs[i].key);
+            if (un_prefs[i].type == UN_PREF_STRING) free(un_prefs[i].s);
+        }
+        un_prefs_n = 0;
+        un_prefs_dirty = 1;
+        un_prefs_save();
+        return;
+    }
+    /* Host UI affordances with no webOS equivalent; silently fine as no-ops.
+     * Named here so they stop showing up as unanswered contract gaps. */
+    if (strcmp(p2->name,"startActivityIndicator")==0 ||
+        strcmp(p2->name,"stopActivityIndicator")==0 ||
+        strcmp(p2->name,"setWakeLock")==0)
+        return;
+
     un_trace_unhandled("void", p2);
 }
 static jint
 unity_jnienv_CallIntMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
 {
     if (strcmp(p2->name,"getDeviceOrientation")==0) return 0;
+    /* 0 = ORIENTATION_UNDEFINED; the TouchPad is landscape-native and apkenv
+     * already owns rotation, so never report a change here. */
+    if (strcmp(p2->name,"getOrientation")==0) return 0;
+    /* Bytes of RAM Unity may assume it can use. The device has ~940 MB total;
+     * report a conservative 256 MB so Unity picks modest texture/heap budgets. */
+    if (strcmp(p2->name,"getTotalMemory")==0) return 256 * 1024 * 1024;
+
+    if (strcmp(p2->name,"GetInt")==0) {          /* PlayerPrefs.GetInt(key, def) */
+        const char *key = un_jstr(env, va_arg(p3, void *));
+        int def = va_arg(p3, int);
+        struct un_pref *p = un_pref_find(key);
+        return (p != NULL && p->type == UN_PREF_INT) ? p->i : def;
+    }
+
     un_trace_unhandled("int", p2);
     return 0;
 }
 static jboolean
 unity_jnienv_CallBooleanMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
 {
+    /* Every PlayerPrefs setter must return TRUE; managed PlayerPrefs.SetX()
+     * throws PlayerPrefsException on false, which kills the caller's Awake(). */
+    if (strcmp(p2->name,"SetInt")==0) {
+        const char *key = un_jstr(env, va_arg(p3, void *));
+        int v = va_arg(p3, int);
+        struct un_pref *p = un_pref_slot(key);
+        if (p == NULL) return 0;
+        p->type = UN_PREF_INT; p->i = v; un_prefs_dirty = 1;
+        return 1;
+    }
+    if (strcmp(p2->name,"SetFloat")==0) {
+        const char *key = un_jstr(env, va_arg(p3, void *));
+        float v = (float)va_arg(p3, double);
+        struct un_pref *p = un_pref_slot(key);
+        if (p == NULL) return 0;
+        p->type = UN_PREF_FLOAT; p->f = v; un_prefs_dirty = 1;
+        return 1;
+    }
+    if (strcmp(p2->name,"SetString")==0) {
+        const char *key = un_jstr(env, va_arg(p3, void *));
+        const char *v = un_jstr(env, va_arg(p3, void *));
+        struct un_pref *p = un_pref_slot(key);
+        if (p == NULL) return 0;
+        p->type = UN_PREF_STRING; p->s = strdup(v ? v : ""); un_prefs_dirty = 1;
+        return 1;
+    }
+    if (strcmp(p2->name,"HasKey")==0) {
+        const char *key = un_jstr(env, va_arg(p3, void *));
+        return un_pref_find(key) != NULL;
+    }
+
     un_trace_unhandled("bool", p2);
     return 0;
 }
@@ -261,6 +528,15 @@ static jfloat
 unity_jnienv_CallFloatMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
 {
     if (strcmp(p2->name,"getScreenDPI")==0) return 132.0f;
+
+    if (strcmp(p2->name,"GetFloat")==0) {        /* PlayerPrefs.GetFloat(key, def) */
+        const char *key = un_jstr(env, va_arg(p3, void *));
+        /* jfloat through C varargs is promoted to double - read it as such. */
+        float def = (float)va_arg(p3, double);
+        struct un_pref *p = un_pref_find(key);
+        return (p != NULL && p->type == UN_PREF_FLOAT) ? p->f : def;
+    }
+
     un_trace_unhandled("float", p2);
     return 0;
 }
@@ -294,6 +570,12 @@ typedef void (*unity_nativeFile_t)(JNIEnv* env, jobject p0, jstring p1);
 typedef jboolean  (*unity_nativeRender_t)(JNIEnv* env, jobject p0);
 typedef void (*unity_initJni_t)(JNIEnv* env, jobject p0);
 typedef void (*unity_InitPlayerPrefs_t)(JNIEnv*, jobject p0);
+/* UnityPlayer.onSurfaceChanged() -> nativeResize(surfaceW, surfaceH, viewW, viewH)
+ * (signature (IIII)V, read out of libunity's JNINativeMethod table and confirmed
+ * against UnityPlayer.smali). */
+typedef void (*unity_nativeResize_t)(JNIEnv*, jobject, jint, jint, jint, jint);
+typedef void (*unity_nativeResume_t)(JNIEnv*, jobject);            /* ()V  */
+typedef void (*unity_nativeFocusChanged_t)(JNIEnv*, jobject, jboolean); /* (Z)V */
 typedef jboolean (*unity_androidinit_t)(JNIEnv*, jobject p0, jstring p1, jstring p2);
 typedef void (*unity_androidpreparegameloop_t)(JNIEnv*, jobject);
 typedef void (*unity_nativeTouch_t)(JNIEnv*, jobject, jint id, jfloat x, jfloat y, jint action, jlong time, jint extra) SOFTFP;
@@ -310,6 +592,8 @@ struct SupportModulePriv {
     unity_nativeFile_t nativeFile;
     unity_nativeRender_t nativeRender;
     unity_InitPlayerPrefs_t InitPlayerPrefs;
+    unity_nativeResize_t nativeResize;
+    unity_nativeResume_t nativeResume;
     unity_androidinit_t unityAndroidInit;
     unity_androidpreparegameloop_t unityAndroidPrepareGameLoop;
     unity_nativeTouch_t nativeTouch;
@@ -326,6 +610,9 @@ unity_try_init(struct SupportModule *self)
      * and nothing here calls the stored pointer. Kept only for symmetry with
      * libunity above. With APKENV_HOST_MONO set, libmono is not loaded at all. */
     self->priv->JNI_OnLoad_libmono = (jni_onload_t)LOOKUP_LIBM("libmono","JNI_OnLoad");
+
+    /* Unity 3.5 links both GLES libs but draws through shaders only. */
+    GLOBAL_M->module_hacks->prefer_gles_version = 2;
 
     self->override_env.GetStaticFieldID = unity_jnienv_GetStaticFieldID;
     self->override_env.GetStaticObjectField = unity_jnienv_GetStaticObjectField;
@@ -387,6 +674,7 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
 
     MODULE_DEBUG_PRINTF("JNI_OnLoad\n");
     un_home = strdup(home);
+    un_prefs_load(un_home);
     un_hookcheck("JNI_OnLoadlibunity)"); fprintf(stderr, "[UN] JNI_OnLoad(libunity)\n");
     self->priv->JNI_OnLoad_libunity(VM_M,0);
     un_hookcheck("JNI_OnLoad done"); fprintf(stderr, "[UN] JNI_OnLoad done\n");
@@ -401,6 +689,8 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
     self->priv->InitPlayerPrefs = jnienv_find_native_method(PLAYERPREFS_CLASS_NAME, "InitPlayerPrefs");
     self->priv->nativeTouch = jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeTouch");
     self->priv->nativeFocusChanged = jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeFocusChanged");
+    self->priv->nativeResize = jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeResize");
+    self->priv->nativeResume = jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeResume");
     fprintf(stderr, "[UN] natives: init=%p file=%p render=%p initJni=%p androidInit=%p prepare=%p touch=%p prefs=%p\n",
             (void*)self->priv->nativeInit, (void*)self->priv->nativeFile, (void*)self->priv->nativeRender,
             (void*)self->priv->initJni, (void*)self->priv->unityAndroidInit, (void*)self->priv->unityAndroidPrepareGameLoop,
@@ -414,6 +704,7 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
     self->priv->nativeFile(ENV_M,GLOBAL_M,file);
     if (self->priv->initJni) { un_hookcheck("initJni"); fprintf(stderr, "[UN] initJni\n"); self->priv->initJni(ENV_M,GLOBAL_M); }
     if (self->priv->InitPlayerPrefs) { un_hookcheck("InitPlayerPrefs"); fprintf(stderr, "[UN] InitPlayerPrefs\n"); self->priv->InitPlayerPrefs(ENV_M,GLOBAL_M); }
+    un_screen_w = width; un_screen_h = height;
     un_hookcheck("nativeInit"); fprintf(stderr, "[UN] nativeInit(%d,%d)\n", width, height);
     self->priv->nativeInit(ENV_M,GLOBAL_M,width,height);
     char libdir[512]; snprintf(libdir, sizeof(libdir), "%slib", home);
@@ -428,6 +719,27 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
         fprintf(stderr, "[UN] unityAndroidPrepareGameLoop\n");
         self->priv->unityAndroidPrepareGameLoop(ENV_M,GLOBAL_M);
         fprintf(stderr, "[UN] prepare done\n");
+    }
+    /* UnityPlayer.onDrawFrame()'s first-time tail, in the Java host's exact
+     * order (read from UnityPlayer.smali):
+     *     unityAndroidInit -> unityAndroidPrepareGameLoop
+     *     -> nativeResize(w, h, w, h) -> nativeResume() -> windowFocusChanged(true)
+     * Skipping the middle two leaves the engine sized 0x0 AND paused: it clears
+     * to the camera background every frame and submits no geometry at all
+     * (measured: 0 glDrawArrays, glViewport never called). nativeResize must come
+     * AFTER prepareGameLoop - calling it next to nativeInit is too early, the
+     * graphics device does not exist yet and the size is dropped. */
+    if (self->priv->nativeResize) {
+        fprintf(stderr, "[UN] nativeResize(%d,%d,%d,%d)\n", width, height, width, height);
+        self->priv->nativeResize(ENV_M,GLOBAL_M,width,height,width,height);
+    } else {
+        fprintf(stderr, "[UN] WARNING: nativeResize not found - expect a blank screen\n");
+    }
+    if (self->priv->nativeResume) {
+        fprintf(stderr, "[UN] nativeResume\n");
+        self->priv->nativeResume(ENV_M,GLOBAL_M);
+    } else {
+        fprintf(stderr, "[UN] WARNING: nativeResume not found - engine stays paused\n");
     }
     if (self->priv->nativeFocusChanged) self->priv->nativeFocusChanged(ENV_M,GLOBAL_M,1);
     /* FMOD audio: same AudioTrack-style device pump as WMW (org.fmod.FMODAudioDevice) */
@@ -462,14 +774,23 @@ unity_update(struct SupportModule *self)
     if (self->priv->nativeRender) {
         jboolean r = self->priv->nativeRender(ENV_M,GLOBAL_M);
         self->priv->frames++;
-        if (self->priv->frames <= 3 || (self->priv->frames % 600) == 0)
+        if (self->priv->frames <= 3 || (self->priv->frames % 600) == 0) {
             fprintf(stderr, "[UN] nativeRender #%lu -> %d\n", self->priv->frames, r);
+            apkenv_gl_probe_frame(self->priv->frames);
+        }
+        /* The app is killed rather than closed on webOS (and during dev by the
+         * harness), so PlayerPrefs would never reach disk if we only saved on
+         * Flush(). Write back periodically; un_prefs_save() is a no-op unless
+         * something actually changed. */
+        if ((self->priv->frames % 300) == 0)
+            un_prefs_save();
     }
 }
 
 static void
 unity_deinit(struct SupportModule *self)
 {
+    un_prefs_save();
 }
 
 static void

@@ -180,6 +180,39 @@ void *apkenv_get_hooked_symbol_dlfcn(void *handle, const char *sym)
     return apkenv_get_hooked_symbol(sym, 1);
 }
 
+/* Register hooks, SKIPPING any name already in the table.
+ *
+ * The GLES1 and GLES2 mapping tables share 68 names (glClear, glDrawArrays,
+ * glViewport, glBindTexture, ...). An engine that links both libs - Unity does -
+ * makes apkenv register both tables, and plain register_hooks() appends
+ * duplicates. apkenv_get_hooked_symbol() then bsearch()es a table with two
+ * entries for the same name and gets an ARBITRARY one, so half the engine's
+ * calls go to the ES1 wrapper and half to the ES2 wrapper. Those forward to two
+ * different device libraries against one context: geometry is submitted and
+ * silently never drawn (measured on Temple Run 2: ~10k draw calls and 14M
+ * vertices a second, correct 1024x768 viewport, blank blue screen).
+ *
+ * DT_NEEDED order decides the winner, and libGLESv1_CM.so precedes libGLESv2.so,
+ * which is what we want: the TouchPad can only give an ES1.1 context anyway. */
+static int register_hooks_nodup(const struct _hook *new_hooks, size_t count)
+{
+    struct _hook filtered[512];
+    size_t i, n = 0;
+    size_t skipped = 0;
+
+    for (i = 0; i < count && n < sizeof(filtered) / sizeof(filtered[0]); i++) {
+        if (apkenv_get_hooked_symbol(new_hooks[i].name, 0) != NULL) {
+            skipped++;
+            continue;
+        }
+        filtered[n++] = new_hooks[i];
+    }
+    if (skipped != 0)
+        printf("GLES: %zu symbols already hooked by the other GLES table - kept the first\n",
+               skipped);
+    return register_hooks(filtered, n);
+}
+
 int register_hooks(const struct _hook *new_hooks, size_t count)
 {
     if (hooks_count + count > HOOKS_MAX) {
@@ -198,32 +231,40 @@ int register_hooks(const struct _hook *new_hooks, size_t count)
 void *get_builtin_lib_handle(const char *libname)
 {
     size_t i;
+    const char *base;
 
     if (libname == NULL)
         return NULL;
 
-    if (strcmp(libname, "libGLESv1_CM.so") == 0) {
+    base = strrchr(libname, '/');
+    base = (base != NULL) ? base + 1 : libname;
+
+    if (strcmp(base, "libGLESv1_CM.so") == 0) {
 #ifdef APKENV_GLES
         if (!global.loader_seen_glesv1)
-            register_hooks(hooks_gles1, HOOKS_GLES1_COUNT);
+            register_hooks_nodup(hooks_gles1, HOOKS_GLES1_COUNT);
 #endif
         global.loader_seen_glesv1 = 1;
     }
-    else if (strcmp(libname, "libGLESv2.so") == 0) {
+    else if (strcmp(base, "libGLESv2.so") == 0) {
 #ifdef APKENV_GLES2
         if (!global.loader_seen_glesv2)
-            register_hooks(hooks_gles2, HOOKS_GLES2_COUNT);
+            register_hooks_nodup(hooks_gles2, HOOKS_GLES2_COUNT);
 #endif
         global.loader_seen_glesv2 = 1;
     }
 
+    /* Match on the BASENAME. Engines dlopen() the platform libs by absolute
+     * Android path - Unity 3.5's libunity.so hardcodes "/system/lib/libEGL.so" -
+     * and an exact-string compare misses those, so the builtin never answers and
+     * the load fails. Temple Run 2 did this ~11 times per frame. */
     for (i = 0; i < sizeof(builtin_libs) / sizeof(builtin_libs[0]); i++) {
-        if (strcmp(libname, builtin_libs[i]) != 0)
+        if (strcmp(base, builtin_libs[i]) != 0)
             continue;
         /* Entries that are only builtin when bridged: if no host library has
          * taken over this SONAME, fall through so the apk's copy is loaded as
          * usual. This keeps every other port (WMW/PvZ/Alex) unaffected. */
-        if (i == BUILTIN_LIB_MONO && !apkenv_hostlib_provides(libname))
+        if (i == BUILTIN_LIB_MONO && !apkenv_hostlib_provides(base))
             return NULL;
         return &builtin_libs[i];
     }

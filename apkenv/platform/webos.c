@@ -61,6 +61,26 @@ webos_init(int gles_version)
 
     /* 0,0,0 -> keep the device's native landscape mode (1024x768). */
     priv.screen = SDL_SetVideoMode(0, 0, 0, SDL_OPENGLES | SDL_FULLSCREEN);
+
+    if (priv.screen == NULL && gles_version != 1) {
+        /* Asking this SDL for an ES2 context ALWAYS fails on the TouchPad: it
+         * requests EGL_CONTEXT_CLIENT_VERSION=2 / EGL_RENDERABLE_TYPE=ES2_BIT
+         * and the Adreno 220 driver answers EGL_BAD_ALLOC, for every config and
+         * size (webos://knowledge/opengl-es-on-touchpad - measured, not
+         * theorised: nine pixel formats fail identically, while raw EGL from a
+         * shell succeeds on all 27 configs). The device reports
+         * GL_VERSION "OpenGL ES-CM 1.1" through this path.
+         *
+         * Degrade instead of dying: an engine that would merely look wrong under
+         * fixed-function is strictly better than one that will not start. */
+        fprintf(stderr, "webos_init: GLESv%d context refused (%s); "
+                        "falling back to GLESv1\n", gles_version, SDL_GetError());
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 1);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+        priv.screen = SDL_SetVideoMode(0, 0, 0, SDL_OPENGLES | SDL_FULLSCREEN);
+        gles_version = 1;
+    }
+
     if (priv.screen == NULL) {
         fprintf(stderr, "webos_init: SDL_SetVideoMode failed: %s\n", SDL_GetError());
         return 0;

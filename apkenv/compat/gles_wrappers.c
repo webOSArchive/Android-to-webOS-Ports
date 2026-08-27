@@ -233,9 +233,39 @@ my_glAlphaFunc(GLenum func, GLclampf ref)
     WRAPPERS_DEBUG_PRINTF("glAlphaFunc()\n", func, ref);
     functions.glAlphaFunc(func, ref);
 }
+/* --- one-shot / periodic GL activity probe (APKENV_GL_PROBE=1) --------------
+ * Answers the only question that matters when the screen is a flat colour:
+ * is the engine submitting geometry at all, and where is it sending it? */
+#include <stdio.h>
+#include <stdlib.h>
+unsigned long gp_draws, gp_verts, gp_draws2, gp_verts2;
+int gp_vp2[4];
+int gp_on = -1;
+static int gp_fbo = 0;
+int gp_vp[4];
+static int gp_last_fbo = -1;
+static float gp_clear[4];
+int gp_enabled(void)
+{
+    if (gp_on < 0) { const char *e = getenv("APKENV_GL_PROBE"); gp_on = (e && *e == '1'); }
+    return gp_on;
+}
+void apkenv_gl_probe_frame(unsigned long frame)
+{
+    if (!gp_enabled()) return;
+    fprintf(stderr, "[GLPROBE] frame=%lu ES1{draws=%lu verts=%lu vp=%d,%d,%dx%d} "
+                    "ES2{draws=%lu verts=%lu vp=%d,%d,%dx%d} fbo=%d clear=%.2f,%.2f,%.2f\n",
+            frame, gp_draws, gp_verts, gp_vp[0], gp_vp[1], gp_vp[2], gp_vp[3],
+            gp_draws2, gp_verts2, gp_vp2[0], gp_vp2[1], gp_vp2[2], gp_vp2[3],
+            gp_fbo, gp_clear[0], gp_clear[1], gp_clear[2]);
+    gp_draws = gp_verts = gp_draws2 = gp_verts2 = 0;
+}
+
 void
 my_glClearColor(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha)
 {
+    if (gp_enabled()) { gp_clear[0]=red; gp_clear[1]=green; gp_clear[2]=blue; gp_clear[3]=alpha; }
+
     WRAPPERS_DEBUG_PRINTF("glClearColor()\n", red, green, blue, alpha);
     functions.glClearColor(red, green, blue, alpha);
 }
@@ -882,6 +912,8 @@ my_glDisableClientState(GLenum array)
 void
 my_glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
+    if (gp_enabled()) { gp_draws++; gp_verts += (unsigned long)count; }
+
     WRAPPERS_DEBUG_PRINTF("glDrawArrays(mode=0x%04x, first=%d, count=%d)\n", mode, first, count);
     if(global_module_hacks.glDrawArrays_rotation_hack) {
         if(global.platform->get_orientation() != global_module_hacks.current_orientation) {
@@ -895,6 +927,8 @@ my_glDrawArrays(GLenum mode, GLint first, GLsizei count)
 void
 my_glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
 {
+    if (gp_enabled()) { gp_draws++; gp_verts += (unsigned long)count; }
+
     WRAPPERS_DEBUG_PRINTF("glDrawElements(%d, %d, %d, %p)\n", mode, count, type, indices);
     functions.glDrawElements(mode, count, type, indices);
 }
@@ -1427,6 +1461,8 @@ my_glVertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointe
 void
 my_glViewport(GLint x, GLint y, GLsizei width, GLsizei height)
 {
+    if (gp_enabled()) { gp_vp[0]=x; gp_vp[1]=y; gp_vp[2]=width; gp_vp[3]=height; }
+
     WRAPPERS_DEBUG_PRINTF("glViewport(%d, %d, %d, %d)\n", x, y, width, height);
     if (global_module_hacks.render_to_fbo) {
         static int vp_log = 0;
@@ -1814,6 +1850,8 @@ my_glIsFramebufferOES(GLuint framebuffer)
 void
 my_glBindFramebufferOES(GLenum target, GLuint framebuffer)
 {
+    if (gp_enabled()) { gp_fbo = (int)framebuffer; }
+
     WRAPPERS_DEBUG_PRINTF("glBindFramebufferOES(target=0x%04x, framebuffer=%u)\n", target, framebuffer);
     if (global_module_hacks.render_to_fbo) {
         apkenv_fbo_ensure();

@@ -69,6 +69,11 @@ struct ModuleHacks {
      * those per-call hooks stay disabled. */
     int render_to_fbo;
     int fbo_w, fbo_h;
+    /* Which GLES version the engine actually wants, when its libs import both
+     * (Unity ships GLESv1 and GLESv2 symbols but renders through shaders).
+     * 0 = no preference, use the loader heuristic. Set from a module's
+     * try_init(); APKENV_GLES_VERSION overrides both. */
+    int prefer_gles_version;
     /* Letterbox: the engine believes the surface is smaller than the screen;
      * every glViewport/glScissor on the real framebuffer is shifted by this
      * offset so the image sits centered, and the module clears the bars. */
