@@ -1,0 +1,33 @@
+diff --git a/mono/utils/mono-filemap.c b/mono/utils/mono-filemap.c
+index 05061752..d3480023 100644
+--- a/mono/utils/mono-filemap.c
++++ b/mono/utils/mono-filemap.c
+@@ -29,7 +29,8 @@ static MonoFileMapClose    file_close_func    = 0;
+        MonoFileMapMap      file_map_func      = 0;
+        MonoFileMapUnmap    file_unmap_func    = 0;
+ 
+-#if defined(ANDROID)
++/* webOS: the ANDROID guard is removed - libunity calls mono_file_map_override()
++ * unconditionally to map assemblies out of the apk, and we build for glibc. */
+ void mono_file_map_override(MonoFileMapOpen open_func, MonoFileMapSize size_func, MonoFileMapFd fd_func, MonoFileMapClose close_func, MonoFileMapMap map_func, MonoFileMapUnmap unmap_func)
+ {
+ 	file_open_func     = open_func;
+@@ -39,7 +40,6 @@ void mono_file_map_override(MonoFileMapOpen open_func, MonoFileMapSize size_func
+ 	file_map_func      = map_func;
+ 	file_unmap_func    = unmap_func;
+ }
+-#endif
+ 
+ MonoFileMap *
+ mono_file_map_open (const char* name)
+diff --git a/runtime/Makefile.am b/runtime/Makefile.am
+index 6f6055de..9f3575c8 100644
+--- a/runtime/Makefile.am
++++ b/runtime/Makefile.am
+@@ -1,5 +1,5 @@
+ # hack to prevent 'check' from depending on 'all'
+-AUTOMAKE_OPTIONS = cygnus
++# AUTOMAKE_OPTIONS = cygnus  # webOS: removed in automake >=1.13; only a check-dep hack
+ 
+ tmpinst = _tmpinst
+ 

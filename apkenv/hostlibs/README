@@ -1,0 +1,14 @@
+hostlibs/<platform>/ - libraries built against the DEVICE's own glibc, loaded by
+apkenv with the real dlopen() and bridged into the bionic namespace by
+compat/hostlib.c.
+
+Do NOT put these in libs/<platform>/. That directory is APKENV_LOCAL_BIONIC_PATH,
+the search path of apkenv's *bionic* linker, and packaging/build-ipk.sh copies
+*.so out of it into the jail's bionic lib dir. These are glibc objects; they must
+never be handed to the bionic linker.
+
+  webos/libmono-webos.so   Unity's Mono 2.6.5 runtime (Unity-Technologies/mono
+                           @ unity3.5, commit 64c3378a), built by
+                           tools/build-mono-webos.sh. Stands in for the bionic
+                           libmono.so inside templerun2_1.2.1.apk, whose export
+                           set it matches exactly (910 symbols, zero diff).
