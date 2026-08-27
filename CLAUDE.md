@@ -28,15 +28,13 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
   icon with audio, centered letterbox; `apkenv/packaging/out/com.apkenv.pvzhd_1.0.1_all.ipk`.
   Full trail: `plan/PVZ-HD-menu-freeze.md`. Module: `apkenv/modules/marmalade.c`.
 
-- **Temple Run 2 (Unity 3.5 + Mono) — OPEN, not running.** Dies in Mono init after several general
-  bionic↔glibc ABI fixes (allocator hooks, `sigaction` layout, cleanup handlers). `plan/TEMPLERUN2.md`; execution plan for the native-Mono stage: `plan/TEMPLERUN2-MONO.md`.
-  - **Native Mono track (2026-08-27):** a glibc build of Unity's Mono 2.6.5 now exists
-    (`apkenv/hostlibs/webos/libmono-webos.so`, from `apkenv/tools/build-mono-webos.sh`); its export
-    set matches the apk's bionic `libmono.so` exactly. apkenv gained a **general host-library bridge**
-    (`apkenv/compat/hostlib.[ch]`, `APKENV_HOST_MONO=<path>`) that publishes a glibc `.so`'s symbols
-    into the hook table so bionic code binds to it — reusable for any engine carrying its own runtime.
-    Blocked on device testing (host `novacomd` wedged; needs `sudo systemctl restart novacomd`).
-    Run protocol + full trail: `plan/TEMPLERUN2-MONO.md` §6.
+- **Temple Run 2 (Unity 3.5 + Mono) — OPEN, menu renders, not playable (2026-08-27).** Native
+  glibc Mono (`apkenv/hostlibs/webos/libmono-webos.so`, general host-lib bridge
+  `apkenv/compat/hostlib.[ch]`) runs the engine; packaged as `com.apkenv.templerun2` 0.1.2 and
+  launches from the icon. Three open symptoms — magenta 3D (Unity **error shader**: the game's
+  shaders are ES2-only and we run the ES1 device), taps ignored (`nativeTouch` source arg is 0,
+  must be `0x1002`), landscape (manifest says portrait) — with the plan in
+  **`plan/TEMPLERUN2-RENDER-INPUT.md`**. History: `plan/TEMPLERUN2.md`, `plan/TEMPLERUN2-MONO.md`.
 
 ## Where's My Water? (first port)
 - **Playable end-to-end with audio**, ships as `com.apkenv.wheresmywater` `.ipk` (launcher icon). Portrait via render-to-FBO; FMOD audio pump. Full writeup: `android-port-shim.md`, `apkenv/BUILD-STATE.md`, `plan/STAGE-*.md`.

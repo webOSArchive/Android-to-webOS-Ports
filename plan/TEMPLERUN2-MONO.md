@@ -393,6 +393,11 @@ shader imports) and picks fixed-function here — `glCreateShader` is never call
 
 ## 9. Handoff (2026-08-27, end of session)
 
+> **SUPERSEDED for the three open symptoms — see `plan/TEMPLERUN2-RENDER-INPUT.md`.** Review found:
+> the purple 3D is Unity's *error shader* (all game shaders are ES2-only; `gles_mode=2`), the
+> manifest declares **portrait**, and `nativeTouch`'s last arg is the MotionEvent *source*
+> (`0x1002`), which we pass as 0. The "orientation is settled" and "do not retry ES2" advice below is wrong.
+
 **Installed and launchable from the icon:** `com.apkenv.templerun2` v0.1.2
 (`packaging/out/`, built by `packaging/build-ipk.sh` with
 `APPID/APK/APPINFO/ENVFILE/HOSTLIBS`). The package ships the native Mono runtime in
