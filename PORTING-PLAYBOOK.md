@@ -74,6 +74,31 @@ the fallback signal is if it fails. The person holding the device is the scarce 
 (WMW: normalized 0..1; Marmalade: `onMotionEvent(id, action+4, x, y)` pixels). Pump SDL input on
 *every* engine yield, not only on swap — static menus idle without rendering and drop taps.
 
+**Fake-JNI correctness (three bugs that cost a session each).**
+- **Override the `V` variant of every `Call*Method` you override.** A module that overrides
+  `CallObjectMethod` but not `CallObjectMethodV` leaves the va_list form on `jni/jnienv.c`'s
+  generic fallback, which returns the `GLOBAL_J(env)` **sentinel** for any unanswered object
+  call. The engine then feeds that to `GetStringUTFChars`, gets NULL, and builds a
+  `std::string` from it — `SIGSEGV` in `strlen` with no clue which host method was wanted.
+- **`GetStringUTFChars` must return a COPY.** `ReleaseStringUTFChars` `free()`s whatever Get
+  returned, so handing back the jstring's own buffer frees it; the next Get on that jstring
+  aborts the process with `double free or corruption (fasttop)`. Bit WMW2, fixed in
+  `jni/jnienv.c`, then bit Temple Run 2 again through a module override.
+- **An unimplemented host method that *returns a value the engine acts on* is not a no-op.**
+  Unity's managed `PlayerPrefs.SetX()` **throws** when the Java side returns false, killing the
+  caller's `Awake()`. Returning 0/NULL "harmlessly" is how you lose a game's startup objects.
+
+**Input focus comes from the launcher, not from novacom.** A binary started with
+`novacom run` renders fine but receives **no SDL input at all** — `ev_total=1` over 2400 polls
+and, tellingly, **no `SDL_ACTIVEEVENT`**. Installed and launched from its icon, the same binary
+gets a normal stream of `SDL_MOUSEBUTTONDOWN`/`UP`. Foreground vs detached makes no difference.
+**Test touch from a packaged `.ipk`**, and do not spend time debugging "dead input" until you have.
+
+**Ask the engine for the orientation; don't infer it from the screen.** Temple Run 2 *looks*
+like a portrait game and is one on phones, but this build calls `setOrientation(0)` =
+`SCREEN_ORIENTATION_LANDSCAPE` and its manifest declares none. Handling `setOrientation` as a
+logged no-op is cheap and settles the question before anyone builds a rotation path.
+
 **Dialogs / blocking host calls.** Text entry (`getInputString` → native `setInputText`), error
 boxes (`showError`), anything modal: answer them synchronously from the module (check the engine
 clears its result slot *before* the call — then an in-call answer is race-free). Never answer
@@ -88,6 +113,23 @@ empty strings where the game re-prompts.
   open the mixer 44100 Hz stereo and ship music at exactly that (`ffmpeg -ac 2 -ar 44100 -c:a
   libvorbis`). Paths arrive relative (Android cwd is `/`): try `/`+path and an `.ogg` twin.
   Make `load_music` return NULL on failure (upstream returned an empty wrapper = silent success).
+
+**GL wrappers: never register two tables that share names.** `gles_mapping.h` and
+`gles2_mapping.h` share **68** symbols (`glClear`, `glDrawArrays`, `glViewport`,
+`glBindTexture`, ...). An engine that links both GL libs makes apkenv register both tables;
+appending duplicates leaves `apkenv_get_hooked_symbol()` `bsearch`ing a table with two entries
+per name and taking an arbitrary one, so the engine's calls split across two wrappers against a
+single context. Symptom: correct viewport, ~10k draw calls and 14M vertices a second, and a
+**blank screen**. `register_hooks_nodup()` keeps the first registration (DT_NEEDED order puts
+`libGLESv1_CM.so` first). *Corollary for debugging: a probe that instruments only one of the
+two tables will confidently report "0 draws". Instrument every path a symbol can take.*
+
+**Compressed textures.** Android games ship **ETC1** as a matter of course, and the TouchPad's
+GLES1 context does **not** expose `GL_OES_compressed_ETC1_RGB8_texture` —
+`glCompressedTexImage2D` returns `GL_INVALID_ENUM` and every upload is silently dropped, so
+geometry draws untextured. `compat/etc1.c` decodes it on the CPU (unit test:
+`tools/etc1test.c`). Note ETC1 carries **no alpha**; Unity splits alpha into a second ETC1
+texture, so an RGB-only upload is not the whole story for anything blended.
 
 **Display.** Landscape-native TouchPad (1024x768). Portrait games: render-to-FBO + one rotated
 blit (WMW). Wrong aspect (PvZ ships only 1280x800 assets): `APKENV_MARM_LOGICAL=WxH` reports a

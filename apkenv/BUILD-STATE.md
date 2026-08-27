@@ -1,5 +1,26 @@
 # apkenv webOS port — BUILD STATE (persistent; do NOT keep this only in chat/scratch)
 
+## ⭐ 2026-08-27 (later) — Temple Run 2 RENDERS: title screen + menu, installed as an .ipk
+
+`com.apkenv.templerun2` v0.1.2 installs and launches from the icon. Boots, loads all
+assemblies, audio pump up, 6600+ frames, no crashes. **Not yet playable:** the 3D scene is
+untextured/purple (UI text is correct) and taps reach `nativeTouch` but the engine ignores them.
+Full trail + ranked next steps: `plan/TEMPLERUN2-MONO.md` §9.
+
+What it took, beyond the Mono bridge (all general, all in `PORTING-PLAYBOOK.md` §4):
+- Override the **`V` variant** of every `Call*Method` (the non-V-only override sent unanswered
+  object calls to the `GLOBAL_J` sentinel → `strlen(NULL)`).
+- **`GetStringUTFChars` must return a copy** — otherwise `ReleaseStringUTFChars` frees the
+  jstring's own buffer and the first touch aborts with `double free or corruption`.
+- Real **PlayerPrefs** (managed `SetX()` throws on false and kills `Awake()`).
+- Builtin libs matched by **basename** (`/system/lib/libEGL.so`, 13,498 failures → 0).
+- `nativeResize(w,h,w,h)` + `nativeResume()` **after** `prepareGameLoop`, per `UnityPlayer.smali`.
+- **`register_hooks_nodup()`** — the GLES1/GLES2 tables share 68 names and duplicates resolved
+  arbitrarily, splitting the engine across two wrappers. *This was the blank screen.*
+- **`compat/etc1.c`** software ETC1 decode (the Adreno ES1 context rejects ETC1 outright).
+- `packaging/build-ipk.sh` gained **`HOSTLIBS=`** for bridged glibc libs.
+- **Input focus requires launching from the icon**, not `novacom run`.
+
 ## ⭐ 2026-08-27 — Temple Run 2: native Mono bridged in; Mono now RUNS on device
 
 **New general capability: the host-library bridge** (`compat/hostlib.[ch]`). `dlopen()`s a
