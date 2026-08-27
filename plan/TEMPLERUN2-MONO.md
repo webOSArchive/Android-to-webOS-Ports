@@ -233,6 +233,15 @@ stubs → packaging as `com.apkenv.templerun2`.
 
 ## 6. Running log (Opus appends; newest last)
 - 2026-08-27 (Fable): plan written. TLS theory refuted by byte scan (see §1). Branch `unity3.5` = 2.6.5 / corlib 82.
+- 2026-08-27 (Opus) **CHECKPOINT A MET.** Cloned `Unity-Technologies/mono` branch `unity3.5` @ **`64c3378a67376d089f8ad6f7b6cad4619fdaefa9`** (matches the pinned ls-remote). **All 118 imports present — zero MISSING.** Audit script + results in scratchpad (`audit-found.txt`). Locations of the interesting ones:
+  - `mono_file_map_override` → `mono/utils/mono-filemap.c:33`, **guarded by `#if defined(ANDROID)`**.
+  - `mono_set_find_plugin_callback` → `mono/metadata/loader.c:1221`.
+  - `mono_thread_suspend_all_other_threads` → `mono/metadata/threads.c:3152` (my first grep pattern just missed same-line return types).
+  - `mono_unity_set_embeddinghostname`, `mono_unity_socket_security_enabled_set` → **`unity/unity_utils.c:90,113`** — a *top-level* `unity/` dir, not under `mono/`.
+- 2026-08-27 (Opus) **Two build-wiring issues found in §3.1, to fix in §3.2** (neither was in the plan):
+  1. **`unity/unity_utils.c` is not in the autotools build.** No `unity/Makefile.am`, `unity/` absent from `SUBDIRS` (Unity built it with their own system). It is not optional: `mono/metadata/icall-def.h:245,252` reference `mono_unity_get_embeddinghostname` / `mono_unity_socket_security_enabled_get` **unconditionally**, so libmono will not link without it. Fix: add `unity_utils.c` to the metadata sources. (`unity/unity_cross_utils.c` is 100% commented out — skip it.)
+  2. **`mono_file_map_override` needs the `ANDROID` guard removed**, not `-DANDROID`. Blast radius check says a global `-DANDROID` is wrong: it also flips `libgc/include/private/gcconfig.h:2435` (Android GC config) and `libgc/pthread_stop_world.c:363` (Android-kernel errno tolerance), neither of which we want on webOS's kernel. Fix: unconditional in `mono-webos.patch`.
+  - Watch item: `mono_unity_write_to_unity_log` does `fprintf(stdout, mono_string_to_utf8(str))` — non-literal format; may trip `-Werror=format-security` on gcc 4.3.3.
 
 ## A. The 118 imports (also `plan/tr2-mono-imports.txt`)
 mono_add_internal_call mono_array_class_get mono_array_new mono_array_new_full
