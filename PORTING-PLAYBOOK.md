@@ -122,6 +122,22 @@ empty strings where the game re-prompts.
   open the mixer 44100 Hz stereo and ship music at exactly that (`ffmpeg -ac 2 -ar 44100 -c:a
   libvorbis`). Paths arrive relative (Android cwd is `/`): try `/`+path and an `.ogg` twin.
   Make `load_music` return NULL on failure (upstream returned an empty wrapper = silent success).
+- **When the engine's own stream is stuck, carry the music over the path that already works.**
+  Unity's native FMOD stream in Temple Run 2 primes one 64 KB buffer and never consumes it, and
+  inline-hooking libunity's FMOD internals to force it **crashed the device**. Everything else had
+  been ruled out (our pump, file IO, volume, game logic, `fmodInitJni`, missing threads). Shipped
+  instead: the game's own music track, decoded at package time, mixed into the *known-good*
+  AudioTrack pump after `fmodProcess()` and before the ring write — `APKENV_FMOD_MUSIC_PCM`, so no
+  other game changes. What makes that honest rather than a fake: the game's **own** asset; **its
+  format exactly** (24000 Hz stereo S16 — FMOD's *measured* rate, since the pump does no
+  resampling); wired to the real control (`APKENV_FMOD_MUSIC_PREF` → the in-game slider); gain
+  **ramped across the chunk** (a step at a buffer boundary clicks); and the limits written down (it
+  loops, and does not follow the per-scene music source). *"The mechanism is unfixable" and "the
+  outcome is undeliverable" are different claims — check the second before spending another
+  session on the first.*
+- **Assets are not always one file per file.** That music lived in
+  `sharedassets0.assets.resS` as **two concatenated MP3s with no container** (Unity keeps the
+  offsets elsewhere); decoding it whole silently yields both tracks back to back. Split first.
 
 **GL wrappers: never register two tables that share names.** `gles_mapping.h` and
 `gles2_mapping.h` share **68** symbols (`glClear`, `glDrawArrays`, `glViewport`,
