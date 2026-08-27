@@ -105,3 +105,6 @@ int apkenv_my_pthread_setname_np(pthread_t thid, const char *thname);
 void apkenv_my___pthread_cleanup_push(void *c, void (*routine)(void*), void *arg);
 void apkenv_my___pthread_cleanup_pop(void *c, int execute);
 int apkenv_my___pthread_gettid(pthread_t t);
+int apkenv_my_pthread_cond_timeout_np(pthread_cond_t *cond, pthread_mutex_t *mutex, unsigned msecs);
+int apkenv_my___pthread_cond_timedwait_relative(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *reltime);
+int apkenv_my___pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime, int clock);

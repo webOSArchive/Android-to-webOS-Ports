@@ -782,6 +782,49 @@ int apkenv_my_pthread_cond_timedwait_relative_np(pthread_cond_t *cond,
     return pthread_cond_timedwait(realcond, realmutex, &tv);
 }
 
+/* Bionic-only entry points, imported by libunity and until now UNHOOKED.
+ *
+ * "Unimplemented: pthread_cond_timeout_np / __pthread_cond_timedwait_relative /
+ * __pthread_cond_timedwait" in every log was not informational: those names
+ * resolved to the apk's bionic libc, whose implementation operates on a bionic
+ * cond layout - but every cond in this process was created through our hooked
+ * pthread_cond_init and is a glibc object. A wait through the wrong
+ * implementation on the wrong layout does not error; it never returns. FMOD's
+ * stream thread sleeps on exactly these calls, which is consistent with a
+ * stream that reads its header once and is never serviced again.
+ *
+ * pthread_cond_timeout_np(cond, mutex, ms)                relative, milliseconds
+ * __pthread_cond_timedwait_relative(cond, mutex, reltime)  relative timespec
+ * __pthread_cond_timedwait(cond, mutex, abstime, clock)    absolute on a clock */
+int apkenv_my_pthread_cond_timeout_np(pthread_cond_t *cond,
+                pthread_mutex_t *mutex, unsigned msecs)
+{
+    struct timespec rel;
+    rel.tv_sec  = msecs / 1000;
+    rel.tv_nsec = (long)(msecs % 1000) * 1000000L;
+    return apkenv_my_pthread_cond_timedwait_relative_np(cond, mutex, &rel);
+}
+
+int apkenv_my___pthread_cond_timedwait_relative(pthread_cond_t *cond,
+                pthread_mutex_t *mutex, const struct timespec *reltime)
+{
+    return apkenv_my_pthread_cond_timedwait_relative_np(cond, mutex, reltime);
+}
+
+int apkenv_my___pthread_cond_timedwait(pthread_cond_t *cond,
+                pthread_mutex_t *mutex, const struct timespec *abstime, int clock)
+{
+    /* bionic passes the clock the abstime is on; convert to a relative wait so
+     * the clock base cannot mismatch glibc's. */
+    struct timespec now, rel;
+    clock_gettime(clock == CLOCK_MONOTONIC ? CLOCK_MONOTONIC : CLOCK_REALTIME, &now);
+    rel.tv_sec  = abstime->tv_sec  - now.tv_sec;
+    rel.tv_nsec = abstime->tv_nsec - now.tv_nsec;
+    if (rel.tv_nsec < 0) { rel.tv_sec--; rel.tv_nsec += 1000000000L; }
+    if (rel.tv_sec < 0) { rel.tv_sec = 0; rel.tv_nsec = 0; }
+    return apkenv_my_pthread_cond_timedwait_relative_np(cond, mutex, &rel);
+}
+
 /*
  * pthread_rwlockattr_* functions
  *

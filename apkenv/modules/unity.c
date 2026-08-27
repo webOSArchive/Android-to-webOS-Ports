@@ -805,6 +805,10 @@ un_force_gles2_device(void *addr_in_libunity)
 
     fprintf(stderr, "[UN-GLES2] libunity base=%p, device-select flag was %d\n",
             (void *)base, (int)*flag);
+    if (*flag != 0) {
+        fprintf(stderr, "[UN-GLES2] flag already set by the engine - no patch needed\n");
+        return;
+    }
 
     /* the flag: make every flag-dependent path agree */
     if (mprotect((void *)((unsigned long)flag & ~(unsigned long)(pagesize - 1)),
@@ -887,10 +891,28 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
                 width, height);
     }
     un_screen_w = width; un_screen_h = height;
+    /* nativeInit(II) is NOT (width, height). The Java host queues
+     * UnityPlayer$24(glesMode, splashMode) from a(IZ): glesMode is init(IZ)'s
+     * argument (settings.xml gles_mode = 2) and splashMode is
+     * getSettings().getInt("splash_mode") (= 1). We passed the screen size
+     * here for the whole port - which fed the engine glesMode=1024 (not 2, so
+     * it built its fixed-function device) and a splash mode of 768 (so the
+     * Imangi logo screen never showed). The size reaches the engine through
+     * nativeResize, which we already call correctly. */
+    {
+        int gles_mode = 2, splash_mode = 1;
+        const char *e;
+        if ((e = getenv("APKENV_UNITY_GLES_MODE")) != NULL) gles_mode = atoi(e);
+        if ((e = getenv("APKENV_UNITY_SPLASH")) != NULL) splash_mode = atoi(e);
+        un_hookcheck("nativeInit");
+        fprintf(stderr, "[UN] nativeInit(glesMode=%d, splashMode=%d)  [surface %dx%d via nativeResize]\n",
+                gles_mode, splash_mode, width, height);
+        self->priv->nativeInit(ENV_M,GLOBAL_M,gles_mode,splash_mode);
+    }
+    /* After nativeInit (which may set the device-select flag itself now that it
+     * receives glesMode=2) and before unityAndroidInit (which creates the
+     * device). The patch skips itself if the flag is already set. */
     un_force_gles2_device((void *)self->priv->nativeInit);
-
-    un_hookcheck("nativeInit"); fprintf(stderr, "[UN] nativeInit(%d,%d)\n", width, height);
-    self->priv->nativeInit(ENV_M,GLOBAL_M,width,height);
     /* onSurfaceCreated -> nativeRecreateGfxState, which the Java host runs on the
      * GL thread BEFORE the first onDrawFrame. We had skipped it entirely, and
      * skipping it is a candidate cause of the engine building its fixed-function
