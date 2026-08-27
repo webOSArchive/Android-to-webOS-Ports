@@ -39,6 +39,7 @@
 #include <stdlib.h>
 #include <sys/time.h>
 #include <time.h>
+#include "../accelerometer/accelerometer.h"
 #include "../compat/hooks.h"
 #include <errno.h>
 #include <sys/mman.h>
@@ -601,6 +602,10 @@ typedef void (*unity_nativeResume_t)(JNIEnv*, jobject);            /* ()V  */
  * real host builds the graphics device, with the EGL context the Java side just
  * created already current - i.e. it is the call that decides ES1 vs ES2. */
 typedef void (*unity_nativeRecreateGfxState_t)(JNIEnv*, jobject);  /* ()V  */
+/* com.unity3d.player.p.onSensorChanged() -> queueEvent -> p$1.run() ->
+ * UnityPlayer.nativeSensor(x, y, z, timestampNanos). This is how acceleration
+ * reaches Input.acceleration; there is no polling path on the native side. */
+typedef void (*unity_nativeSensor_t)(JNIEnv*, jobject, jfloat, jfloat, jfloat, jlong) SOFTFP;
 typedef void (*unity_nativeFocusChanged_t)(JNIEnv*, jobject, jboolean); /* (Z)V */
 typedef jboolean (*unity_androidinit_t)(JNIEnv*, jobject p0, jstring p1, jstring p2);
 typedef void (*unity_androidpreparegameloop_t)(JNIEnv*, jobject);
@@ -621,6 +626,7 @@ struct SupportModulePriv {
     unity_nativeResize_t nativeResize;
     unity_nativeResume_t nativeResume;
     unity_nativeRecreateGfxState_t nativeRecreateGfxState;
+    unity_nativeSensor_t nativeSensor;
     unity_androidinit_t unityAndroidInit;
     unity_androidpreparegameloop_t unityAndroidPrepareGameLoop;
     unity_nativeTouch_t nativeTouch;
@@ -825,6 +831,7 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
     self->priv->nativeResize = jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeResize");
     self->priv->nativeResume = jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeResume");
     self->priv->nativeRecreateGfxState = jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeRecreateGfxState");
+    self->priv->nativeSensor = jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeSensor");
     fprintf(stderr, "[UN] natives: init=%p file=%p render=%p initJni=%p androidInit=%p prepare=%p touch=%p prefs=%p\n",
             (void*)self->priv->nativeInit, (void*)self->priv->nativeFile, (void*)self->priv->nativeRender,
             (void*)self->priv->initJni, (void*)self->priv->unityAndroidInit, (void*)self->priv->unityAndroidPrepareGameLoop,
@@ -962,10 +969,68 @@ un_autotap(struct SupportModule *self, unsigned long frame)
     }
 }
 
+
+/* ---- tilt ------------------------------------------------------------------
+ * Parts of Temple Run 2 steer by tilting the device, and nothing was feeding
+ * the engine acceleration: apkenv's accelerometer went to SDL's joystick API,
+ * which finds nothing on webOS (no joydev), and the module never called
+ * nativeSensor even when it did.
+ *
+ * The Java host's own transform, read from com.unity3d.player.p.onSensorChanged:
+ *
+ *   row = (Display.getOrientation() - 1) & 3          // we answer 0 -> row 3
+ *   d[] = { 1, 1,0,1,   -1, 1,1,0,   -1,-1,0,1,   1,-1,1,0 }
+ *   K   = -1/9.80665                                  // m/s2 -> g, and negated
+ *   x' = d[row*4+0] * K * v[d[row*4+2]]
+ *   y' = d[row*4+1] * K * v[d[row*4+3]]
+ *   z' =                 K * v[2]
+ *
+ * i.e. for row 3:  x' = K*v[1],  y' = -K*v[0],  z' = K*v[2].
+ * Doing the remap here (rather than feeding raw values) keeps us bit-identical
+ * to what the real host would have sent for the orientation we report.
+ *
+ * Timestamp is SensorEvent.timestamp: nanoseconds on a monotonic clock. */
+static void
+un_feed_tilt(struct SupportModule *self)
+{
+    static const int d[16] = { 1, 1, 0, 1,  -1, 1, 1, 0,  -1, -1, 0, 1,  1, -1, 1, 0 };
+    const float K = -1.0f / 9.80665f;
+    float v[3] = { 0.0f, 0.0f, 0.0f };
+    struct timespec ts;
+    int row, ix, iy;
+    float x, y, z;
+
+    if (self->priv->nativeSensor == NULL)
+        return;
+    if (!apkenv_accelerometer_get(&v[0], &v[1], &v[2]))
+        return;
+
+    /* unity_jnienv_CallIntMethodV answers getOrientation() with 0. */
+    row = ((0 - 1) & 3);
+    ix = d[row * 4 + 2];
+    iy = d[row * 4 + 3];
+    x = (float)d[row * 4 + 0] * K * v[ix];
+    y = (float)d[row * 4 + 1] * K * v[iy];
+    z = K * v[2];
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    self->priv->nativeSensor(ENV_M, GLOBAL_M, (jfloat)x, (jfloat)y, (jfloat)z,
+                             (jlong)ts.tv_sec * 1000000000LL + ts.tv_nsec);
+
+    if (getenv("APKENV_ACCEL_DEBUG") != NULL) {
+        static int n;
+        if (n++ % 60 == 0)
+            fprintf(stderr, "[UN-TILT] accel m/s2=(% .2f,% .2f,% .2f) -> "
+                            "Input.acceleration g=(% .3f,% .3f,% .3f)\n",
+                    v[0], v[1], v[2], x, y, z);
+    }
+}
+
 static void
 unity_update(struct SupportModule *self)
 {
     { static unsigned long f; un_autotap(self, ++f); }
+    un_feed_tilt(self);
 
     if (self->priv->nativeRender) {
         jboolean r = self->priv->nativeRender(ENV_M,GLOBAL_M);

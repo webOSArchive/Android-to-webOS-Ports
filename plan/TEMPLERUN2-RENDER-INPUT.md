@@ -343,3 +343,49 @@ back to `libGLES_CM`, which is correct because an ES2 device never calls them.
 - The ETC1 correction above still stands: the Adreno advertises `GL_OES_compressed_ETC1_RGB8_texture`
   on both contexts, so the CPU decoder is probably unnecessary now.
 
+---
+
+# Tilt / accelerometer (2026-08-27)
+
+Landscape is **final** - the game adapts to it and looks right; the portrait work in Stage P above
+is cancelled, not deferred.
+
+**apkenv's accelerometer was a dead path on webOS.** `platform/common/sdl_accelerometer_impl.h`
+opens `SDL_JoystickOpen(0)`, and webOS 3.0.5 has **no joydev in the kernel** - controllers and
+sensors are evdev-only, so `SDL_INIT_JOYSTICK` finds nothing and the accelerometer silently
+reported a dead-still device forever (`webos://knowledge/game-controllers`, fact #1). Every module
+that reads acceleration (marmalade, trg2, and now unity) was affected, so this fix is general.
+
+**The PDK exposes the sensors directly** (`/opt/PalmPDK/include/PDL_Sensors.h`):
+`PDL_SensorExists` / `PDL_EnableSensor` / `PDL_PollSensor` with `PDL_AccelerometerEvent {x,y,z}`.
+New `platform/common/pdl_accelerometer_impl.h` implements apkenv's `struct Accelerometer` over it;
+`webos.c` registers it and keeps the SDL path as a fallback. Verified on device: `|g| = 1.065`, so
+**PDL reports g, not m/s2** - scaled by 9.80665 to meet apkenv's Android-frame contract.
+Poll drains to the newest queued sample, or tilt lags behind the device.
+
+**Unity's path for acceleration** (`com.unity3d.player.p.onSensorChanged`, type 1 -> `p$1.run()`):
+`UnityPlayer.nativeSensor(x, y, z, timestampNanos)`. There is no native polling path - if the host
+never calls it, `Input.acceleration` stays (0,0,0) forever, which is exactly what we had.
+`modules/unity.c: un_feed_tilt()` now calls it every frame, applying the host's own transform:
+
+    row = (Display.getOrientation() - 1) & 3        // we answer 0 -> row 3
+    d[] = { 1,1,0,1,  -1,1,1,0,  -1,-1,0,1,  1,-1,1,0 }
+    K   = -1/9.80665                                // m/s2 -> g, negated
+    x' = d[row*4+0] * K * v[d[row*4+2]]             // row 3:  x' =  K*v[1]
+    y' = d[row*4+1] * K * v[d[row*4+3]]             //         y' = -K*v[0]
+    z' =                 K * v[2]                   //         z' =  K*v[2]
+
+Doing the remap here keeps us bit-identical to what the real Java host would have sent for the
+orientation we report, instead of inventing a convention.
+
+**Open: the axis convention of the TouchPad's sensor.** Resting propped up it reads
+`raw g = (-0.86, +0.03, -0.62)`, which gives `Input.acceleration = (-0.03, -0.86, +0.62)` - a
+neutral steering axis and gravity down the screen, i.e. plausible, but only a physical roll
+proves which raw axis is the 1024 edge. `APKENV_ACCEL_MAP` permutes/negates axes at runtime
+(e.g. `"y,-x,z"`) and `APKENV_ACCEL_DEBUG=1` logs raw + transformed, so calibration is one
+launch and an env edit, no rebuild.
+
+*Build-system footgun, hit again:* `build-webos.sh` rebuilds an object only when its **`.c`** is
+newer - it does not track headers. Editing a header-only impl and rebuilding silently keeps the
+old object; `touch` the `.c`.
+

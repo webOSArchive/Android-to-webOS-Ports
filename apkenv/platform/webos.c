@@ -29,6 +29,7 @@
 #include <PDL.h>
 
 #include "common/sdl_accelerometer_impl.h"
+#include "common/pdl_accelerometer_impl.h"
 #include "common/sdl_audio_impl.h"
 #include "common/sdl_mixer_impl.h"
 
@@ -105,7 +106,18 @@ webos_init(int gles_version)
 
     memset(finger_down, 0, sizeof(finger_down));
 
-    apkenv_accelerometer_register(sdl_accelerometer);
+    /* Accelerometer: PDL's sensor API, not SDL's joystick one. webOS 3.0.5 has
+     * no joydev, so SDL_JoystickOpen(0) always returns NULL here and the SDL
+     * path silently reports a dead-still device forever
+     * (webos://knowledge/game-controllers). Keep SDL as the fallback for
+     * anything PDL says it has no sensor for. */
+    apkenv_accelerometer_register(pdl_accelerometer);
+    if (!apkenv_accelerometer_init()) {
+        fprintf(stderr, "webos_init: PDL accelerometer unavailable, "
+                        "falling back to the SDL joystick path\n");
+        apkenv_accelerometer_register(sdl_accelerometer);
+        apkenv_accelerometer_init();
+    }
     apkenv_audio_register(sdl_audio);
     apkenv_mixer_register(sdl_mixer);
 
