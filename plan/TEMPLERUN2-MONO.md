@@ -334,3 +334,68 @@ mono_thread_current mono_thread_detach mono_thread_pool_cleanup mono_thread_set_
 mono_threads_set_shutting_down mono_thread_suspend_all_other_threads mono_type_get_class
 mono_type_get_name mono_type_get_object mono_type_get_type mono_unity_set_embeddinghostname
 mono_unity_socket_security_enabled_set mono_verifier_set_mode
+
+## 7. After the bridge: getting pixels on screen (2026-08-27, same session)
+
+Checkpoint D put Mono and the Java contract right; everything below is what stood
+between "the engine runs" and "the game draws". Each was found by measurement.
+
+1. **`GetStringUTFChars` on the global ref → `strlen(NULL)`** — *root cause:*
+   `modules/unity.c` overrode `CallObjectMethod` but **not `CallObjectMethodV`**, so the
+   va_list form fell through to `jni/jnienv.c`'s generic fallback, which returns
+   `GLOBAL_J(env)` (the GlobalState pointer, used as a sentinel) for *every* unanswered
+   object call. libunity fed that to `GetStringUTFChars`, got NULL, and built a
+   `std::string` from it. Fixed by routing both variants through one dispatch.
+   **Lesson: override the `V` variant of every `Call*Method` you override.**
+2. **PlayerPrefs** — managed `PlayerPrefs.SetX()` **throws** `PlayerPrefsException` when the
+   Java side returns false, which was aborting `AudioManager.Awake()`,
+   `GameController.Awake()` and `Promotion.BeginPromo()`. Implemented as a real
+   persistent store (`<dataDir>/playerprefs.txt`).
+3. **`dlopen("/system/lib/libEGL.so")` failing ~11x/frame** (13,498 errors in one run) —
+   `get_builtin_lib_handle()` compared the *whole string* against `"libEGL.so"`. Engines
+   use absolute Android paths. Now matches on **basename**.
+4. **The missing first-frame contract.** `UnityPlayer.onDrawFrame()`'s first-time tail is
+   `unityAndroidInit → unityAndroidPrepareGameLoop → nativeResize(w,h,w,h) → nativeResume()
+   → windowFocusChanged(true)`. We called neither `nativeResize` (signature `(IIII)V`, read
+   from libunity's JNINativeMethod table and confirmed in `UnityPlayer.smali`) nor
+   `nativeResume`. Order matters: `nativeResize` next to `nativeInit` is **too early** —
+   the graphics device does not exist yet and the size is dropped.
+5. **THE renderer bug: duplicate GLES hook names.** `gles_mapping.h` and `gles2_mapping.h`
+   share **68 names** (`glClear`, `glDrawArrays`, `glViewport`, `glBindTexture`, ...). An
+   engine that links both libs — Unity does — makes apkenv register both tables;
+   `register_hooks()` appended duplicates and `apkenv_get_hooked_symbol()` `bsearch`ed a
+   table with two entries per name, getting an **arbitrary** one. Half the engine's calls
+   went to the ES1 wrapper and half to the ES2 wrapper, against a single ES1 context:
+   ~10,200 draw calls and 14.5M vertices a second, correct 1024x768 viewport, **blank blue
+   screen**. `register_hooks_nodup()` keeps the first (DT_NEEDED order puts
+   `libGLESv1_CM.so` first, which is what we want). **This produced the title screen.**
+   - *Method note:* my first probe instrumented only the ES1 wrappers and reported
+     "0 draws, glViewport never called". That conclusion was **wrong** — the calls were
+     going to the ES2 table. Probing one of two possible dispatch paths is not a
+     measurement. Instrument every path a symbol could take before concluding.
+6. **ETC1 textures rejected** — the game ships `GL_ETC1_RGB8_OES` (0x8D64) textures, and the
+   Adreno 220's GLES1 context does not expose `GL_OES_compressed_ETC1_RGB8_texture`:
+   `glCompressedTexImage2D` returned `GL_INVALID_ENUM` (0x500) for every texture, so all
+   uploads were dropped and geometry drew untextured (flat purple silhouettes).
+   `compat/etc1.c` decodes ETC1 on the CPU and uploads RGB8. GL errors after upload: 0.
+
+### GLES2 is not available through SDL on this device — do not retry
+`webos://knowledge/opengl-es-on-touchpad` and `webos://knowledge/pdk` both document it, and
+this session re-confirmed it: asking SDL for an ES2 context yields
+`Could not create EGL context` for every format and size, because Palm's SDL requests
+`EGL_CONTEXT_CLIENT_VERSION=2` / `EGL_RENDERABLE_TYPE=ES2_BIT` and the Adreno driver answers
+`EGL_BAD_ALLOC`. The device reports `GL_VERSION "OpenGL ES-CM 1.1"` through this path. Using
+raw EGL to get ES2 would break the 3-layer compositor (touch flicker) — the KB's explicit
+"never call EGL directly" rule. `platform/webos.c` now **falls back to ES1** rather than
+failing to start, and `apkenv.c` gained a module GLES preference + `APKENV_GLES_VERSION`.
+Fortunately Unity 3.5's libunity carries **both** renderers (11 fixed-function imports and 14
+shader imports) and picks fixed-function here — `glCreateShader` is never called.
+
+### Open
+- **Touch does nothing on the title screen.** `nativeTouch` signature `(IFFIJI)V` matches the
+  module's typedef exactly and `module->input` is wired, so the shape is right; the open
+  questions are whether the events arrive (`[SDLHB]` showed `ev_total=1`) and whether Unity
+  wants pixels or another coordinate space. Next: log every `unity_input()` call, and read
+  `UnityPlayer.smali`'s `dispatchTouchEvent`/`onTouchEvent` for what the Java host really sends.
+- Verify the ETC1 decode visually; check for remaining colour/format issues.
+- Then: audio verification, portrait/orientation, packaging as `com.apkenv.templerun2`.
