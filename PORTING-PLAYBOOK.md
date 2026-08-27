@@ -107,12 +107,24 @@ Memory: PvZ needs ~450 MB free; `requiredMemory` in `appinfo.json` makes webOS r
 ## 5. Build / deploy / package (the mechanics)
 
 - Build: `apkenv/build-webos.sh` (two toolchains, see `android-port-shim.md` §2). **No header
-  dependency tracking** — `rm build/webos/*.o` after touching any shared header (`apkenv.h`,
-  `mixer.h`), or you get a stale-struct assert on device.
+  dependency tracking** — it rebuilds an object only when the `.c` is newer than the `.o`. `rm
+  build/webos/*.o` (or `touch` the `.c`) after touching any shared header (`apkenv.h`, `mixer.h`)
+  **or any generated one** (`compat/mono_symbols.h`), or you get a stale-struct assert on device —
+  or, worse, a silently stale table: regenerating the Mono symbol list alone relinked the old one
+  and the device log kept reporting the previous count.
 - Transport: **USB/novacom is the reliable path** (`novacom put file:///path < local`,
   `novacom run file:///bin/<binary> -- args`; `sh -c` argument passing is mangled — run binaries
   directly, or a script file via `novacom run file:///bin/sh -- /path/script.sh`). SSH `.88` works
-  only with the legacy-cipher options in `tools/deploy-tp.sh`.
+  only with the legacy-cipher options in `tools/deploy-tp.sh`. Three traps, each cost a cycle:
+  **(1)** pass the `--` separator exactly once. A second one is delivered as the target's `argv[1]`,
+  and busybox then treats the real flags as operands — it surfaced as
+  `mkdir: can't create directory '-p'`. **(2)** `novacom run`'s cwd is `/`, which webOS mounts
+  **read-only** (`/var` and `/media/internal` are rw), so a mis-parsed relative path fails with a
+  confusing `Read-only file system`. **(3)** A hung `novacom run` **wedges the host daemon** — every
+  later `novacom -l` then times out forever, even after killing the client. Recover with
+  `sudo systemctl restart novacomd`. Always run device commands under `timeout`, and run long-lived
+  GUI binaries detached device-side (`( ./apkenv … & ); sleep N; killall apkenv`) so the session
+  always returns.
 - Dev harness: `/var/apkenv2/{apkenv,libs/webos,play-*.sh}` + apk on `/media/internal` + data tree
   in `/media/internal/.apkenv/<apk>/`; log to `/media/internal/apkenv-<name>.log`. A re-flashed
   device loses `/var` — rebuild the harness from the installed WMW `.ipk`'s `libs/webos`.
@@ -129,12 +141,53 @@ contract diff found four gaps (zip-wrapped `readFile`, 3-arg key input, missing 
 `nativeResize`, `getUniqueId`) and one build omission; fixed statically; **booted with music on the
 first device launch**. ~1 hour. `plan/AMAZING-ALEX.md`.
 
-**A harder class — Unity/Mono (Temple Run 2, open):** when the engine brings its own runtime
-(Mono JIT, Boehm GC) the failures move below the Java contract into **bionic↔glibc ABI mismatches**:
-unhooked allocator entry points (a second heap), struct layouts (`sigaction`, `sigset_t`,
-`pthread_attr_t`), fatal stubs for bionic-private pthread calls. Symptoms are corruption, not
-clean errors. Use `APKENV_TRACE_CALLS`, `APKENV_TRACE_FREE`, the register-dumping crash handler,
-and audit every hooked symbol whose struct crosses the boundary. `plan/TEMPLERUN2.md`.
+**A harder class — the engine brings its own runtime (Unity/Mono; Temple Run 2).** When the apk
+ships a JIT + GC (Mono, and anything like it) the failures move *below* the Java contract into
+**bionic↔glibc ABI mismatches**: unhooked allocator entry points (a second heap), struct layouts
+(`sigaction`, `sigset_t`, `pthread_attr_t`), fatal stubs for bionic-private pthread calls. Symptoms
+are memory corruption, not clean errors, and the contract-derivation method above stops applying.
+
+> **Don't translate the ABI call-by-call — replace the runtime.** Build the *same* runtime against
+> the device's glibc and bridge the engine's imports to it. That deletes the entire corruption class
+> in one step instead of chasing it symbol by symbol.
+
+This is now general infrastructure, not a Temple Run 2 hack:
+
+- **`compat/hostlib.[ch]` — the host-library bridge.** `apkenv_hostlib_bridge(path, soname, syms, n)`
+  `dlopen()`s a *glibc* `.so` and registers its symbols as hooks. It works because the bionic linker
+  consults the hook table **before** library symbols for every relocation (`linker.c:1368`), so the
+  hooks shadow the apk's own copy. Pair it with (a) an entry in `builtin_libs[]` so `DT_NEEDED`
+  resolves without a file, and (b) a `libblacklist[]` entry so the apk's bionic copy never loads.
+  Both are gated on a host lib actually claiming that SONAME, so other ports are untouched.
+  Opt in per run: `APKENV_HOST_MONO=<path>`.
+- **Host libs live in `hostlibs/<platform>/`, never `libs/<platform>/`.** The latter is
+  `APKENV_LOCAL_BIONIC_PATH` — the *bionic* linker's search path — and `packaging/build-ipk.sh`
+  copies `*.so` out of it into the jail's bionic lib dir. A glibc object there is a loaded gun.
+- **Derive the bridge set as {engine's UNDEFINED symbols} ∩ {runtime's DEFINED symbols}.** Do *not*
+  match a name prefix. Unity's libunity imports 118 `mono_*` **plus** `g_free` (Mono's embedded
+  eglib) and `GC_delete_thread`/`GC_lookup_thread` (Boehm) — 121 in total; the prefix filter drops
+  three and the run dies at `cannot locate 'g_free'... failed to link libunity.so`.
+  `tools/gen-mono-hooklist.sh` does the intersection.
+- **Verify the pin by comparing export sets.** Our glibc Mono and the apk's bionic Mono export the
+  *same 910 symbols, zero difference either way* — that is what proves you checked out the exact
+  tree the game shipped, far better than matching a version string.
+- **`RTLD_GLOBAL` is safe here but check it:** the bridged runtime publishes every export globally.
+  Confirm none collide with libc (`malloc/free/read/write/mmap/sigaction/pthread_create/dlopen`).
+- **Cross-building an old runtime with the PalmPDK toolchain** (general, will recur): glibc 2.5
+  headers + gcc 4.3 `-std=gnu99` + any `-D_FORTIFY_SOURCE=2` ⇒ `multiple definition of
+  realpath/fgets/gets/stpncpy/...`, because `bits/stdio2.h` & friends use a bare
+  `extern __always_inline`, which under C99 emits an external definition in **every** TU.
+  Fix: **`-fgnu89-inline`**. Also expect `AUTOMAKE_OPTIONS = cygnus` (removed in automake 1.13+) in
+  any pre-2010 tree. Look for the vendor's own build script in the source drop first
+  (Unity shipped `build_runtime_android.sh`) — it is the authoritative flag set; strip its
+  Android-specific defines and keep the CPU/ABI flags. Cross builds cannot run `AC_TRY_RUN` tests,
+  so their cache vars must be passed explicitly (`mono_cv_uscore=no` for ELF/glibc — Unity's `yes`
+  is a bionic quirk that would break `__Internal` P/Invokes).
+
+**Result:** the bionic Mono died inside `mono_jit_init_version` with a corrupted PC. The native one
+initialises, loads `mscorlib` into the Unity Root Domain, JITs and runs managed code on the
+TouchPad — and the remaining work went straight back to being ordinary Java-contract work.
+`plan/TEMPLERUN2-MONO.md` (method + full trail), `plan/TEMPLERUN2.md` (history).
 
 ## 6. Checklist for the next game
 

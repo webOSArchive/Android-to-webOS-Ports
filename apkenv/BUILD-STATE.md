@@ -1,5 +1,51 @@
 # apkenv webOS port — BUILD STATE (persistent; do NOT keep this only in chat/scratch)
 
+## ⭐ 2026-08-27 — Temple Run 2: native Mono bridged in; Mono now RUNS on device
+
+**New general capability: the host-library bridge** (`compat/hostlib.[ch]`). `dlopen()`s a
+*glibc-built* `.so` on the host side and registers its exports in the hook table, so bionic code
+loaded by apkenv's linker binds to it instead of to the apk's bionic copy (the linker checks hooks
+before library symbols, `linker/linker.c:1368`). Reusable for any engine that carries its own
+runtime.
+
+- Opt in per run: **`APKENV_HOST_MONO=<path>`**. Nothing changes for WMW / PvZ / Alex.
+- `builtin_libs[]` gained `BUILTIN_LIB_MONO` (only returned when a host lib actually claims that
+  SONAME, so `DT_NEEDED libmono.so` resolves without a file), and `libblacklist[]` gains
+  `libmono.so` dynamically so the apk's bionic copy never loads. `HOOKS_MAX` 1024 → 2048.
+- **Host libs live in `hostlibs/<platform>/`, NOT `libs/<platform>/`** — the latter is
+  `APKENV_LOCAL_BIONIC_PATH` and `packaging/build-ipk.sh` copies `*.so` out of it into the jail.
+
+**Built: `hostlibs/webos/libmono-webos.so`** — Unity's Mono **2.6.5** (`Unity-Technologies/mono`
+branch `unity3.5` @ `64c3378a`), cross-built with the PalmPDK 4.3.3 toolchain, max symbol version
+GLIBC_2.4. Recipe: `tools/build-mono-webos.sh` (validated end-to-end from a clean clone) +
+`tools/mono-webos.patch`. Gate: `tools/check-mono-exports.sh`.
+Pin proven exact: **its export set is identical to the apk's bionic libmono — 910 symbols, zero
+diff either way.**
+
+**Device results (HP TouchPad):**
+- `tools/monotest.c` alone (no libunity, no apkenv, no bionic): `mono_jit_init_version` OK, JIT ran
+  managed code, `Environment.Version=3.0.40818.0`, **PASS** — `plan/logs/tr2-monotest-1.log`.
+- Under apkenv: **121/121 symbols bridged**, libunity links, the whole Java host contract runs, and
+  **Mono loads `mscorlib` into the Unity Root Domain** — `plan/logs/tr2-hostmono-2.log`.
+- The old bionic-Mono SIGSEGV inside `mono_jit_init_version` (corrupted PC full of ASCII) is **gone**,
+  and with it that whole ABI-corruption class.
+
+**Gotchas banked (details in PORTING-PLAYBOOK.md §4/§5):**
+- Bridge symbol set = **{libunity UNDEFINED} ∩ {libmono DEFINED} = 121**, not the `mono_` prefix
+  (misses `g_free`, `GC_delete_thread`, `GC_lookup_thread` → `cannot locate 'g_free'`).
+- `build-webos.sh` has **no header dependency tracking**: regenerating `compat/mono_symbols.h` alone
+  relinks the *old* table. `touch` the `.c`.
+- Cross-building any pre-2010 autotools tree with PalmPDK gcc 4.3: needs **`-fgnu89-inline`**
+  (glibc 2.5 fortify headers use bare `extern __always_inline`; C99 emits a definition per TU →
+  `multiple definition of realpath/fgets/...`), and `AUTOMAKE_OPTIONS = cygnus` must go.
+- novacom: pass `--` exactly once; `novacom run`'s cwd is `/` and is **read-only**; a hung
+  `novacom run` wedges the host daemon (`sudo systemctl restart novacomd`).
+
+**Current blocker (Java contract, not runtime):** `modules/unity.c:unity_jnienv_GetStringUTFChars()`
+returns NULL when the jstring is the global ref; libunity feeds it to a `std::string(const char*)`
+ctor → `strlen(NULL)` SIGSEGV. See `plan/TEMPLERUN2-MONO.md` §6 and `android-port-shim.md` §4.
+
+
 ## ⭐ 2026-08-26 (later) — Amazing Alex HD SHIPPED too (one-pass port via PORTING-PLAYBOOK.md)
 - `packaging/out/com.apkenv.amazingalex_1.0.0_all.ipk` (23 MB), installed, launcher-icon confirmed.
   Module `modules/angrybirds.c` (Rovio ka3d) now in the webOS build; binary md5 e5abce55 hosts

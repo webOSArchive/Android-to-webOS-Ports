@@ -36,6 +36,38 @@ platform->update()               // SDL_GL_SwapBuffers
 
 ---
 
+### 1b. Host-library bridge — when the game carries its own runtime
+
+Some engines ship a whole language runtime inside the apk (Unity ⇒ Mono's JIT + Boehm GC). Running
+*that* under the bionic shim is a different problem from running a game: a JIT touches signals,
+thread attach, GC stack scanning and executable mappings all at once, so every bionic↔glibc
+mismatch shows up as silent memory corruption rather than a missing symbol.
+
+`compat/hostlib.[ch]` answers it by **replacing the runtime instead of translating it**: build the
+same runtime against the device's glibc, `dlopen()` it on the host side, and register its exports in
+the hook table. The bionic linker checks hooks *before* library symbols on every relocation
+(`linker/linker.c:1368`), so the game's imports bind to the native build.
+
+```
+apkenv (glibc, host)                       bionic world (apkenv's linker)
+  dlopen("libmono-webos.so")                 libunity.so
+    -> hook table: 121 symbols   <--PLT----    imports mono_*, g_free, GC_*
+  builtin_libs += "libmono.so"                DT_NEEDED libmono.so   (satisfied, no file)
+  libblacklist += "libmono.so"                (the apk's bionic libmono never loads)
+```
+
+Three rules, each learned the hard way:
+- The bridge must run **before any apk library is dlopen()ed** (relocation consults the hooks).
+- The symbol set is **{engine's UNDEFINED} ∩ {runtime's DEFINED}**, not a name prefix — libunity
+  also pulls `g_free` and two `GC_*` out of libmono.
+- Host libs go in **`hostlibs/<platform>/`**, never `libs/<platform>/` (that is
+  `APKENV_LOCAL_BIONIC_PATH`, the bionic search path, and packaging copies `*.so` from it).
+
+Opt-in per run (`APKENV_HOST_MONO=<path>`) so every other port is unaffected. Method and full
+trail: `plan/TEMPLERUN2-MONO.md`; build recipe: `apkenv/tools/build-mono-webos.sh`.
+
+---
+
 ## 2. Toolchain: two-compiler cross-build (critical)
 
 The device is **glibc 2.4 / GCC 4.3.3** (PalmPDK). Modern code won't compile with 4.3.3 (dup GLES
@@ -80,6 +112,16 @@ throw unwound `_goEnter()` past its scene-setup store → next frame deref NULL 
   an empty string instead of throwing. (Offset is game-specific; found via gdb backtrace.)
 - **BAKE THE PATCH INTO THE APK** (replace `lib/armeabi*/lib<game>.so` inside the zip), don't just
   drop a patched `.so` next to the binary — see the gdbserver gotcha below.
+
+**Variant: the NULL comes from *our* fake-JNI, not from a missing asset** (Temple Run 2, 2026-08-27).
+Same signature — `SIGSEGV` with `pc` in libc `strlen`, `r0 = 0`, `lr` in the game lib at a
+`bl strlen; add rN, src, r0` sequence (that is a `std::string(const char*)` ctor computing
+`src + strlen(src)`). Here the NULL was returned by `modules/unity.c`'s own
+`unity_jnienv_GetStringUTFChars()`. **When we are the source of the NULL, fix the module — never
+patch the game binary.** And prefer logging every NULL return over silently substituting `""`: a
+substituted empty string turns a crash into a subtly wrong game, and hides which host call is
+actually unanswered. Any fake-JNI accessor that can return NULL (`GetStringUTFChars`,
+`CallObjectMethod`, `GetStaticObjectField`, …) should say so on stderr.
 
 ---
 
