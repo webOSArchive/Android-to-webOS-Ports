@@ -814,3 +814,60 @@ The splash goes up when the graphics device exists (after `nativeInit` +
 still black. Showing it earlier means creating GL objects before the engine's device exists, which
 is exactly what produced `GL_OUT_OF_MEMORY` and a flat-colour screen when the FBO was created early
 (see the comment in `modules/unity.c`). Worth attempting only if that opening gap is actually long.
+
+---
+
+# RELEASE 1.4.0 (2026-08-27) - the port is complete
+
+`apkenv/packaging/out/com.apkenv.templerun2_1.4.0_all.ipk`. Launcher icon, portrait, touch menus,
+swipe, tilt steering, textured 3D on Unity's own GLES2 device, sound effects, **music** (following
+the in-game slider) and a **boot splash**. Nothing known-broken is left that the player can see or
+hear.
+
+## The two shipped workarounds, and what is still actually broken
+
+Neither music nor splash was fixed in the engine, and both are documented above as workarounds
+rather than repairs. That distinction matters if anyone revisits this:
+
+| | Engine state | What ships |
+|---|---|---|
+| Music | Native FMOD stream primes one 64 KB buffer, channel never consumes. **Unfixed.** Inline-hooking libunity's FMOD internals to force it **crashed the device** - do not retry that. | The game's own track, decoded at package time, mixed into the known-good AudioTrack pump. Follows `TR Music Volume`. Loops; does not follow Unity's per-scene music source. |
+| Splash | The engine never opens `splash.png` at all - there is **nothing to fix**. | Host-drawn, riding the rotated present quad, retired on the engine's first draw. |
+
+## Rebuild it from scratch
+
+```
+apkenv/tools/tr2-extract-music.sh      # -> packaging/extras/templerun2/*.pcm  (md5-checked)
+apkenv/tools/tr2-extract-splash.sh     # -> packaging/extras/templerun2/*.raw
+./build-webos.sh
+APPID=com.apkenv.templerun2 APK=packaging/templerun2.apk \
+APPINFO=packaging/templerun2/appinfo.json ENVFILE=packaging/templerun2/apkenv.env \
+HOSTLIBS=hostlibs/webos EXTRAS=packaging/extras/templerun2 ./packaging/build-ipk.sh
+```
+
+The two extracted files are copyrighted game content: gitignored, regenerated from your own apk,
+and **never** left only in `packaging/stage/` (every build starts `rm -rf "$STAGE"`).
+
+## Launch settings (`packaging/templerun2/apkenv.env`)
+
+```
+APKENV_HOST_MONO=hostlibs/webos/libmono-webos.so
+APKENV_FMOD_MUSIC_PCM=android/extras/templerun2-game-24000-s16le.pcm
+APKENV_FMOD_MUSIC_GAIN=0.7          # ceiling at FULL slider; 0.7 x 0.69 = the confirmed 1.3.8 level
+APKENV_FMOD_MUSIC_PREF=TR Music Volume
+APKENV_SPLASH_RGB=android/extras/templerun2-splash-768x1024-rgb.raw
+APKENV_SPLASH_SIZE=768x1024
+```
+
+**Ship check before releasing:** unpack the `.ipk` and read that file - no `APKENV_GL_SNAPSHOT` or
+other instrumentation - and install it, so the device is running what ships rather than the last
+debug build.
+
+## Still open, in priority order
+
+1. The native FMOD stream (the real fix; would retire the bed). Last known state: stream created,
+   one 64 KB buffer primed, thread alive and idle, channel never consumes.
+2. The black gap *before* the graphics device exists - linker, mono bridge, module loading - which
+   the splash does not cover. Needs GL objects created earlier, which is what produced
+   `GL_OUT_OF_MEMORY` when the FBO was created early.
+3. The bed does not follow Unity's per-scene music source.
