@@ -117,7 +117,10 @@ jfieldID unity_jnienv_GetStaticFieldID(JNIEnv *p0, jclass p1, const char *p2, co
 jobject unity_jnienv_GetStaticObjectField(JNIEnv *p0, jclass p1, jfieldID p2) SOFTFP;
 jclass unity_jnienv_GetObjectClass(JNIEnv *p0, jobject p1) SOFTFP;
 jobject unity_jnienv_CallObjectMethod(JNIEnv* env, jobject p1, jmethodID p2, ...) SOFTFP;
+jobject unity_jnienv_CallObjectMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3) SOFTFP;
 jobject unity_jnienv_CallStaticObjectMethod(JNIEnv* env, jclass p1, jmethodID p2, ...) SOFTFP;
+jobject unity_jnienv_CallStaticObjectMethodV(JNIEnv* env, jclass p1, jmethodID p2, va_list p3) SOFTFP;
+static jobject unity_call_static_object(JNIEnv *env, jclass p1, jmethodID p2) SOFTFP;
 const char * unity_jnienv_GetStringUTFChars(JNIEnv *env, jstring string, jboolean *isCopy) SOFTFP;
 
 
@@ -161,13 +164,18 @@ jclass unity_jnienv_GetObjectClass(JNIEnv *p0, jobject p1)
 }
 
 
-jobject unity_jnienv_CallObjectMethod(JNIEnv* env, jobject p1, jmethodID p2, ...)
+/* Shared dispatch for the object-returning instance calls.
+ *
+ * BOTH the "..." and the va_list ("V") entry points must route here. Overriding
+ * only CallObjectMethod leaves CallObjectMethodV on the generic fallback in
+ * jni/jnienv.c, which returns GLOBAL_J(env) - the GlobalState pointer used as a
+ * sentinel - for *every* unanswered call. libunity then hands that to
+ * GetStringUTFChars, gets NULL back, and constructs a std::string from it:
+ * SIGSEGV in strlen with no clue as to which host method was really wanted.
+ * Returning NULL here instead is both honest and traceable. */
+static jobject
+unity_call_object(JNIEnv *env, jmethodID method)
 {
-    MODULE_DEBUG_PRINTF("CallObjectMethod %x %x\n",p1,p2);
-
-    //dummy_jobject* obj = p1;
-    jmethodID method = p2;
-
     if (strcmp(method->name,"getPackageCodePath")==0)
         return (*env)->NewStringUTF(env, global->apk_filename);
 
@@ -183,13 +191,25 @@ jobject unity_jnienv_CallObjectMethod(JNIEnv* env, jobject p1, jmethodID p2, ...
     return NULL;
 }
 
+jobject unity_jnienv_CallObjectMethod(JNIEnv* env, jobject p1, jmethodID p2, ...)
+{
+    MODULE_DEBUG_PRINTF("CallObjectMethod %x %x\n",p1,p2);
+    return unity_call_object(env, p2);
+}
+
+jobject unity_jnienv_CallObjectMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
+{
+    MODULE_DEBUG_PRINTF("CallObjectMethodV %s/%s\n", p2->name, p2->sig ? p2->sig : "");
+    return unity_call_object(env, p2);
+}
+
 jobject
-unity_jnienv_CallStaticObjectMethod(JNIEnv* env, jclass p1, jmethodID p2, ...)
+unity_call_static_object(JNIEnv *env, jclass p1, jmethodID p2)
 {
     struct dummy_jclass* clazz = p1;
     jmethodID method = p2;
 
-    MODULE_DEBUG_PRINTF("unity_jnienv_CallStaticObjectMethod(%s,%s)\n",clazz->name,method->name);
+    MODULE_DEBUG_PRINTF("unity_call_static_object(%s,%s)\n",clazz->name,method->name);
 
     if (strcmp(method->name,"getProperty")==0) {
         //jstring property = va_arg(p3,jstring);
@@ -205,6 +225,18 @@ unity_jnienv_CallStaticObjectMethod(JNIEnv* env, jclass p1, jmethodID p2, ...)
 
     un_trace_unhandled("staticobj", method);
     return NULL;
+}
+
+jobject
+unity_jnienv_CallStaticObjectMethod(JNIEnv* env, jclass p1, jmethodID p2, ...)
+{
+    return unity_call_static_object(env, p1, p2);
+}
+
+jobject
+unity_jnienv_CallStaticObjectMethodV(JNIEnv* env, jclass p1, jmethodID p2, va_list p3)
+{
+    return unity_call_static_object(env, p1, p2);
 }
 
 static void
@@ -299,7 +331,9 @@ unity_try_init(struct SupportModule *self)
     self->override_env.GetStaticObjectField = unity_jnienv_GetStaticObjectField;
     self->override_env.GetObjectClass = unity_jnienv_GetObjectClass;
     self->override_env.CallObjectMethod = unity_jnienv_CallObjectMethod;
+    self->override_env.CallObjectMethodV = unity_jnienv_CallObjectMethodV;
     self->override_env.CallStaticObjectMethod = unity_jnienv_CallStaticObjectMethod;
+    self->override_env.CallStaticObjectMethodV = unity_jnienv_CallStaticObjectMethodV;
     self->override_env.GetStringUTFChars = unity_jnienv_GetStringUTFChars;
     self->override_env.NewGlobalRef = unity_jnienv_NewGlobalRef;
     self->override_env.CallVoidMethodV = unity_jnienv_CallVoidMethodV;
