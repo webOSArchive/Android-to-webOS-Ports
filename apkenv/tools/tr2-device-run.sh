@@ -16,6 +16,9 @@ DEV=/var/apkenv2
 APK=../android-candidates/templerun2_1.2.1.apk
 MANAGED_SRC=build/webos/tr2-managed
 
+# NB: the "--" separator belongs HERE only - do not repeat it at call sites,
+# or the target sees a literal "--" as its first argument (busybox then treats
+# the real flags as operands, in a read-only cwd of "/").
 nc_run() { timeout 300 novacom run "file://$1" -- "${@:2}"; }
 nc_put() { timeout 300 novacom put "file://$2" < "$1"; }
 
@@ -31,7 +34,7 @@ if [ ! -d "$MANAGED_SRC" ]; then
       && mv assets/bin/Data/Managed/* . && rm -rf assets )
 fi
 
-nc_run /bin/mkdir -- -p $DEV/managed
+nc_run /bin/mkdir -p $DEV/managed
 
 echo "PUSH libmono-webos.so"
 nc_put hostlibs/webos/libmono-webos.so $DEV/libmono-webos.so
@@ -43,13 +46,13 @@ done
 if [ "$WHICH" = c ]; then
     echo "PUSH monotest"
     nc_put build/webos/monotest $DEV/monotest
-    nc_run /bin/chmod -- 755 $DEV/monotest
+    nc_run /bin/chmod 755 $DEV/monotest
     echo "=== RUN monotest ==="
-    nc_run $DEV/monotest -- $DEV/libmono-webos.so $DEV/managed $DEV/etc
+    nc_run $DEV/monotest $DEV/libmono-webos.so $DEV/managed $DEV/etc
 else
     echo "PUSH apkenv"
     nc_put apkenv $DEV/apkenv
-    nc_run /bin/chmod -- 755 $DEV/apkenv
+    nc_run /bin/chmod 755 $DEV/apkenv
     echo "=== RUN apkenv with the Mono bridge ==="
     echo "(on device, run:)"
     echo "  cd $DEV && APKENV_HOST_MONO=$DEV/libmono-webos.so \\"
