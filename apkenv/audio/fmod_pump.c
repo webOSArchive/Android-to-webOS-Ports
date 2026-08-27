@@ -41,6 +41,9 @@ fmod_pump_thread(void *arg)
     void       *chunk = NULL;
     int         chunk_bytes = 0;
     int         initialised = 0;
+    const int   meter = (getenv("APKENV_AUDIO_METER") != NULL);
+    int         meter_peak = 0, meter_chunks = 0;
+    const int   meter_every = 90;      /* ~2 s at 512-frame chunks / 24 kHz */
 
     (void)arg;
 
@@ -92,6 +95,30 @@ fmod_pump_thread(void *arg)
         } else {
             if (f_getinfo(env, g_thiz, FMOD_INFO_MIXERRUNNING) == 1) {
                 f_process(env, g_thiz, bb);                 /* fill chunk */
+
+                /* Output level meter (APKENV_AUDIO_METER=1). This is the one
+                 * place that sees exactly what FMOD's mixer produced, which
+                 * separates "the engine never started the music" from "the
+                 * music is mixed but our output path loses it". Silence here
+                 * while a track should be playing means the fault is upstream,
+                 * in the engine, not in this pump. */
+                if (meter) {
+                    const short *sp = (const short *)chunk;
+                    int n = chunk_bytes / 2, i2, peak = 0;
+                    for (i2 = 0; i2 < n; i2++) {
+                        int v = sp[i2] < 0 ? -sp[i2] : sp[i2];
+                        if (v > peak) peak = v;
+                    }
+                    if (peak > meter_peak) meter_peak = peak;
+                    if (++meter_chunks >= meter_every) {
+                        fprintf(stderr, "[FMOD-METER] peak=%d/32767 over %d chunks%s\n",
+                                meter_peak, meter_chunks,
+                                meter_peak == 0 ? "  (SILENCE)" : "");
+                        meter_peak = 0;
+                        meter_chunks = 0;
+                    }
+                }
+
                 apkenv_audiotrack_write(track, chunk, chunk_bytes); /* blocks = pacing */
             } else {
                 initialised = 0;   /* mixer stopped; rebuild on next start */

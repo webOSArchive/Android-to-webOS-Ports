@@ -181,7 +181,41 @@ asset_root_path(const char *filename, char *buf, size_t buflen)
     return buf;
 }
 
+
+/* Bounded tracing of what the engine opens, gated on APKENV_TRACE_FILES=1.
+ * Streamed audio in Unity 3.5 Android goes through its own file-IO layer
+ * (PlatformDependent/AndroidPlayer/FMOD_FileIO.cpp + ApkFile.cpp), which opens
+ * the apk with plain libc - a different path from the in-memory clips the asset
+ * loader decodes. So "SFX work, music does not" is exactly the shape of a
+ * failure here, and this makes it visible instead of silent. */
+static int
+trace_files_enabled(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("APKENV_TRACE_FILES");
+        on = (e != NULL && e[0] != '0');
+    }
+    return on;
+}
+
+static void
+trace_file_open(const char *what, const char *path, int ok, int err)
+{
+    static int n;
+    if (!trace_files_enabled() || path == NULL)
+        return;
+    if (!ok) {
+        /* failures are always worth seeing */
+        fprintf(stderr, "[FILE] %s(%s) FAILED: %s\n", what, path, strerror(err));
+        return;
+    }
+    if (n++ < 400)
+        fprintf(stderr, "[FILE] %s(%s) ok\n", what, path);
+}
+
 FILE *
+
 my_fopen(__const char *__restrict __filename, __const char *__restrict __modes)
 {
     WRAPPERS_DEBUG_PRINTF("fopen(%s, %s)\n", __filename, __modes);
@@ -196,6 +230,7 @@ my_fopen(__const char *__restrict __filename, __const char *__restrict __modes)
         }
     }
     WRAPPERS_DEBUG_PRINTF("fopen(%s, %s) -> %x\n", __filename, __modes, f);
+    trace_file_open("fopen", __filename, f != NULL, errno);
     return f;
 }
 int
@@ -268,6 +303,33 @@ my_frexp(double __x, int *__exponent)
     WRAPPERS_DEBUG_PRINTF("frexp()\n", __x, __exponent);
     return frexp(__x, __exponent);
 }
+/* Does the engine ever READ a given byte range of a file it has open?
+ *
+ * APKENV_TRACE_SEEK_RANGE="0xSTART-0xEND" logs seeks that land inside it.
+ * Used to answer "is the music data ever touched": in an Android build the
+ * audio lives at a known uncompressed offset inside the apk, so a streaming or
+ * decoding read has to seek there. No seeks into the range means the engine
+ * never got as far as reading the clip - a very different bug from a decoder
+ * that reads it and fails. */
+static int
+trace_seek_range(long off)
+{
+    static long lo = -1, hi = -1;
+    static int n;
+    if (lo < 0) {
+        const char *e = getenv("APKENV_TRACE_SEEK_RANGE");
+        lo = hi = 0;
+        if (e != NULL) sscanf(e, "%li-%li", &lo, &hi);
+    }
+    if (hi <= 0 || off < lo || off > hi)
+        return 0;
+    if (n++ < 40)
+        fprintf(stderr, "[SEEK] into watched range: 0x%lx\n", off);
+    else if ((n % 500) == 0)
+        fprintf(stderr, "[SEEK] into watched range: %d seeks so far\n", n);
+    return 1;
+}
+
 int
 my_fscanf(FILE *__restrict __stream, __const char *__restrict __format, ...)
 {
@@ -278,11 +340,13 @@ my_fscanf(FILE *__restrict __stream, __const char *__restrict __format, ...)
     int result = vfscanf(IS_STDIO_FILE(__stream) ? TO_STDIO_FILE(__stream) : __stream, __format, args);
     va_end(args);
 
+
     return result;
 }
 int
 my_fseek(FILE *__stream, long int __off, int __whence)
 {
+    if (__whence == SEEK_SET) trace_seek_range(__off);
     WRAPPERS_DEBUG_PRINTF("fseek(%x, %d, %d)\n", __stream, __off, __whence);
     if (IS_STDIO_FILE(__stream))
         return fseek(TO_STDIO_FILE(__stream), __off, __whence);
@@ -479,6 +543,7 @@ my_lrand48()
 __off_t
 my_lseek(int __fd, __off_t __offset, int __whence)
 {
+    if (__whence == SEEK_SET) trace_seek_range((long)__offset);
     WRAPPERS_DEBUG_PRINTF("lseek()\n", __fd, __offset, __whence);
     return lseek(__fd, __offset, __whence);
 }
@@ -540,6 +605,7 @@ my_open(__const char *__file, int __oflag, ...)
         const char *alt = asset_root_path(__file, buf, sizeof(buf));
         if (alt) fd = open(alt, __oflag);
     }
+    trace_file_open("open", __file, fd >= 0, errno);
     return fd;
 }
 double
