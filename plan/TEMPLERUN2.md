@@ -46,7 +46,14 @@ a silent memory corruption, so progress is by evidence (crash handler + tracers)
    (log entry/exit + 4 args of named engine→runtime calls; forwards to the library's real symbol
    via `apkenv_find_library` + `apkenv_lookup_in_library`).
 
-## Where it dies now
+## Where it dies now (SUPERSEDED 2026-08-27 — kept for the record)
+
+> The native-Mono bridge landed and this failure is **gone**. Mono now initialises,
+> loads `mscorlib` into the Unity Root Domain, and runs. The current blocker is a
+> Java-contract bug (`GetStringUTFChars` returning NULL on the global ref →
+> `strlen(NULL)` in libunity). See `plan/TEMPLERUN2-MONO.md` §6.
+
+### (historical) Where it died under the bionic Mono
 `unityAndroidInit` → Mono init: `SIGSEGV pc=0x3332xxxx` — pc is **ASCII digits** (varies per run:
 "8423", "4233"), i.e. a function pointer overwritten with text that looks like `/proc/self/maps`
 content (Boehm GC's `GC_get_maps` reads it at init). `lr` = glibc `__libc_malloc+0xdc` (stale: the

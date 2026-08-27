@@ -20,8 +20,8 @@ sort -u "$WANT" > "$want"
 missing=$(comm -23 "$want" "$have")
 n_want=$(wc -l < "$want"); n_have=$(wc -l < "$have")
 if [ -n "$missing" ]; then
-    echo "FAIL: $(echo "$missing" | wc -l)/$n_want libunity imports MISSING from $LIB:"
+    echo "FAIL: $(echo "$missing" | wc -l)/$n_want libunity->libmono bridge symbols MISSING from $LIB:"
     echo "$missing" | sed 's/^/  /'
     exit 1
 fi
-echo "OK: all $n_want libunity mono_* imports exported by $LIB ($n_have exports total)"
+echo "OK: all $n_want libunity->libmono bridge symbols exported by $LIB ($n_have exports total)"

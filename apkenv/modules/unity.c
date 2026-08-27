@@ -315,14 +315,22 @@ const char *
 unity_jnienv_GetStringUTFChars(JNIEnv *env, jstring string, jboolean *isCopy)
 {
     MODULE_DEBUG_PRINTF("unity_jnienv_GetStringUTFChars(%x)\n", string);
+    /* Returning NULL here is a live crash source: libunity feeds the result
+     * straight into a std::string ctor, which strlen()s it. Log every NULL
+     * return loudly so it shows up in the trail instead of as a SIGSEGV in
+     * strlen with no context. */
     if (string == GLOBAL_J(env)) {
-        MODULE_DEBUG_PRINTF("WARNING: GetStringUTFChars on global\n");
+        fprintf(stderr, "[UN-JNI] GetStringUTFChars on GLOBAL ref -> NULL\n");
         return NULL;
     }
     if (string == NULL) {
+        fprintf(stderr, "[UN-JNI] GetStringUTFChars(NULL) -> \"\"\n");
         return strdup("");
     }
     struct dummy_jstring *str = (struct dummy_jstring*)string;
+    if (str->data == NULL)
+        fprintf(stderr, "[UN-JNI] GetStringUTFChars: jstring %p has NULL data\n",
+                (void *)string);
     MODULE_DEBUG_PRINTF(" \\-> %s\n", str->data);
     return str->data;
 }
