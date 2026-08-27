@@ -88,6 +88,15 @@ the fallback signal is if it fails. The person holding the device is the scarce 
   Unity's managed `PlayerPrefs.SetX()` **throws** when the Java side returns false, killing the
   caller's `Awake()`. Returning 0/NULL "harmlessly" is how you lose a game's startup objects.
 
+**Hosting a subsystem means you can READ it — the game's own settings are an input you already
+have.** Temple Run 2's music bed needed to follow the in-game music slider. No disassembly was
+required: the game stores that setting through *our* PlayerPrefs, so `novacom get` on the device's
+`playerprefs.txt` named the key (`TR Music Volume`) in one step, and a two-line hook on `SetFloat`
+drives the mixer live (`APKENV_FMOD_MUSIC_PREF`). Cross-check the value against the game's own save
+file if it keeps one, to be sure it is the setting and not an internal scalar. Before reverse-
+engineering a value out of an engine, look in the stores you already host: prefs, save files,
+the data dir.
+
 **Input focus comes from the launcher, not from novacom.** A binary started with
 `novacom run` renders fine but receives **no SDL input at all** — `ev_total=1` over 2400 polls
 and, tellingly, **no `SDL_ACTIVEEVENT`**. Installed and launched from its icon, the same binary

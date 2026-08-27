@@ -18,7 +18,17 @@ after `fmodProcess()` and before the ring write:
   `packaging/extras/templerun2/` (gitignored — copyrighted game audio, regenerate from your apk).
   **Never leave the only copy in `packaging/stage/`; `build-ipk.sh` starts with `rm -rf $STAGE`.**
 
-Device evidence + limits (it loops, and ignores the game's music setting):
+**1.3.9: the bed obeys the game's own music slider**, with no disassembly - a Unity game keeps that
+setting in PlayerPrefs and *we implement PlayerPrefs*. `novacom get` on the device's
+`playerprefs.txt` named the key (`TR Music Volume`); `APKENV_FMOD_MUSIC_PREF` now points at it,
+`modules/unity.c` publishes it on `SetFloat` and on load, and the pump scales its gain per chunk
+(ramped across the chunk - a step change at a chunk boundary clicks). Confirmed: 42 live updates
+from one slider drag, `../plan/logs/tr2-music-volume-1.log`.
+
+**The general move: the settings a game stores through a subsystem we host are readable, and they
+are a supported input to the shim.** No hooking, no patching - look in the store first.
+
+Device evidence + remaining limits (it still loops, and ignores the per-scene music source):
 `../plan/TEMPLERUN2-RENDER-INPUT.md` "Music fallback".
 
 

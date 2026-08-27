@@ -660,9 +660,53 @@ The output meter (`APKENV_AUDIO_METER=1`) is what separates "engine never starte
   .ipk, env path relative, `[FMOD-MUSIC] fallback 'android/extras/...' bytes=5765328 gain=0.50`.
   Nothing to side-load.
 
+## The bed obeys the game's own music slider (1.3.9)
+
+The bed is mixed in *underneath* the engine, so nothing in the engine scales it - which at first
+meant the in-game music slider did nothing to it. It did not have to stay that way, and the fix
+needed no disassembly at all: **a Unity game keeps that setting in PlayerPrefs, and PlayerPrefs is
+ours** (`modules/unity.c` - we implement the whole store, persisted to `playerprefs.txt`).
+
+Pulling the live store off the device named the key in one step:
+
+```
+$ novacom get file:///media/internal/.apkenv/templerun2.apk/playerprefs.txt
+f  TR Sound Volume   0.5
+f  TR Music Volume   0.691068411
+...
+```
+
+(and the game mirrors the same value into its own `gamedata.txt` as `"MusicVolume":0.6910684`,
+which is a useful cross-check that this really is the setting and not some internal scalar).
+
+So: `APKENV_FMOD_MUSIC_PREF` names a PlayerPrefs float key. `un_pref_publish_music()` fires on
+every `PlayerPrefs.SetFloat` of that key and on load (the store already holds last session's value,
+and the game may never call SetFloat again if the player does not touch the slider), and
+`apkenv_fmod_music_set_volume()` publishes it to the pump thread as a lone volatile float. The
+pump reads it once per chunk and scales `APKENV_FMOD_MUSIC_GAIN` by it - 0 is off.
+
+Two details that matter:
+
+- **Ramp, do not step.** The setting can jump between chunks; a step change in gain at a chunk
+  boundary is an audible click. `pcm_mix_s16()` takes a start and end gain and interpolates across
+  the chunk (~21 ms - instant to a player, inaudible as a transition).
+- **Keep reading the file at zero gain.** The bed then stays in sync with wall-clock time the way a
+  real music source does: turning the slider back up resumes where the track would be, not where it
+  was muted.
+
+`APKENV_FMOD_MUSIC_GAIN` is now the ceiling *at full setting*, so it went 0.5 -> 0.7: the confirmed
+1.3.8 loudness was 0.5 flat, and the player's setting sits at 0.69, so 0.7 x 0.69 reproduces it.
+Peak headroom is fine - effects measured ~11000/32767 and the bed ~5500.
+
+Device confirmation on 1.3.9, `plan/logs/tr2-music-volume-1.log`: dragging the in-game slider
+streamed **42 live updates** into the pump (`[FMOD-MUSIC] volume setting -> 0.691, 0.658, ... 0.066`
+and back up), user-confirmed audible. A true 0.0 was not in that drag, so full-off is reasoned
+(`target == 0` skips the mix) rather than observed.
+
 ## Known limits
 
-The fallback loops the game track whenever FMOD's mixer is running, rather than following Unity's
-per-scene music source: it does not stop or change with the scene, and it does not respond to the
-game's own music volume setting. It is a fixed bed under the (working) native sound effects. Fixing
-the native stream properly would replace it - the env var is the whole switch.
+The bed still loops the game's own 60-second track whenever FMOD's mixer is running, rather than
+following Unity's per-scene music source: it does not change with the scene, and it does not stop
+for the menus that would normally be quiet. What it now does respect is the player's music volume,
+including muting. Fixing the native stream properly would replace the whole thing - the env vars
+are the only switch.

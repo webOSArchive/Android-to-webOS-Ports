@@ -234,6 +234,44 @@ un_pref_slot(const char *key)
     return p;
 }
 
+/* The music bed in audio/fmod_pump.c (APKENV_FMOD_MUSIC_PCM) is mixed in
+ * *underneath* the engine, so nothing in the engine scales it - including the
+ * game's own music volume setting. It does not have to stay that way: a Unity
+ * game keeps that setting in PlayerPrefs, and PlayerPrefs is ours. Name the
+ * float key in APKENV_FMOD_MUSIC_PREF and every SetFloat on it drives the bed's
+ * gain live, so the in-game slider works and 0 means off.
+ *
+ * Temple Run 2 writes "TR Music Volume" (mirrored into its own gamedata.txt as
+ * "MusicVolume"). A game that keeps the setting only in its own save file, or
+ * inside Unity's managed PlayerPrefs rather than the Java store, would need a
+ * different publisher - this hook is the cheap case, not the only one. */
+static void
+un_pref_publish_music(const char *key, float value)
+{
+    static const char *want = NULL;
+    static int looked_up = 0;
+
+    if (!looked_up) {
+        want = getenv("APKENV_FMOD_MUSIC_PREF");
+        looked_up = 1;
+    }
+    if (want == NULL || want[0] == '\0' || key == NULL)
+        return;
+    if (strcmp(key, want) == 0)
+        apkenv_fmod_music_set_volume(value);
+}
+
+/* Startup: the store on disk already holds the setting from the last session,
+ * and the game may never call SetFloat again if the player does not touch it. */
+static void
+un_pref_publish_all_music(void)
+{
+    int i;
+    for (i = 0; i < un_prefs_n; i++)
+        if (un_prefs[i].type == UN_PREF_FLOAT)
+            un_pref_publish_music(un_prefs[i].key, un_prefs[i].f);
+}
+
 /* Line format: <type>\t<key>\t<value>. Keys cannot contain a tab (Unity keys
  * are identifiers), and string values may not contain a newline - they are
  * escaped on write. */
@@ -315,6 +353,7 @@ un_prefs_load(const char *home)
     }
     fclose(f);
     fprintf(stderr, "[UN-PREF] loaded %d preferences from %s\n", un_prefs_n, un_prefs_path);
+    un_pref_publish_all_music();
 }
 
 /* Unwrap a jstring argument already pulled from a va_list. NULL for the global
@@ -556,6 +595,7 @@ unity_jnienv_CallBooleanMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p
         struct un_pref *p = un_pref_slot(key);
         if (p == NULL) return 0;
         p->type = UN_PREF_FLOAT; p->f = v; un_prefs_dirty = 1;
+        un_pref_publish_music(key, v);
         return 1;
     }
     if (strcmp(p2->name,"SetString")==0) {

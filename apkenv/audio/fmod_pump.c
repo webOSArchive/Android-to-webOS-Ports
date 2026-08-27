@@ -34,6 +34,29 @@ static volatile int   g_running;
 static int            g_started;
 static pthread_t      g_thread;
 
+/* The game's own music setting, 0..1, scaling APKENV_FMOD_MUSIC_GAIN. -1 means
+ * "nobody has published one" - the bed then plays at the full configured gain,
+ * which is what a game with no observable setting gets. Written from the JNI
+ * threads (modules/unity.c, on every PlayerPrefs.SetFloat of the configured
+ * key) and read by the pump thread once per chunk: a lone float, so a torn read
+ * is impossible on ARM and no lock is warranted. */
+static volatile float g_music_volume = -1.0f;
+
+void
+apkenv_fmod_music_set_volume(float volume)
+{
+    static float announced = -2.0f;
+
+    if (volume < 0.0f) volume = 0.0f;
+    if (volume > 1.0f) volume = 1.0f;
+    g_music_volume = volume;
+
+    if (volume != announced) {
+        fprintf(stderr, "[FMOD-MUSIC] volume setting -> %.3f\n", volume);
+        announced = volume;
+    }
+}
+
 static int
 pcm_read_loop(FILE *file, void *buffer, int bytes)
 {
@@ -59,12 +82,18 @@ pcm_read_loop(FILE *file, void *buffer, int bytes)
     return 1;
 }
 
+/* Mix src into dst, ramping the Q15 gain from `from` to `to` across the chunk.
+ * The ramp is the whole reason this takes two gains: the volume setting can jump
+ * between chunks (a slider drag, or music switched off), and a step change in
+ * gain at a chunk boundary is an audible click. ~21 ms per chunk is a short
+ * enough ramp to feel instant and long enough to be inaudible. */
 static void
-pcm_mix_s16(short *dst, const short *src, int samples, int gain_q15)
+pcm_mix_s16(short *dst, const short *src, int samples, int from_q15, int to_q15)
 {
     int i;
     for (i = 0; i < samples; i++) {
-        int mixed = (int)dst[i] + ((int)src[i] * gain_q15) / 32768;
+        int gain = from_q15 + (int)(((long long)(to_q15 - from_q15) * i) / samples);
+        int mixed = (int)dst[i] + ((int)src[i] * gain) / 32768;
         if (mixed > 32767) mixed = 32767;
         else if (mixed < -32768) mixed = -32768;
         dst[i] = (short)mixed;
@@ -121,7 +150,8 @@ fmod_pump_thread(void *arg)
     const char *music_path = getenv("APKENV_FMOD_MUSIC_PCM");
     FILE       *music = NULL;
     void       *music_chunk = NULL;
-    int         music_gain = 16384;     /* 0.5 in Q15 */
+    int         music_gain = 16384;     /* APKENV_FMOD_MUSIC_GAIN, Q15; 0.5 default */
+    int         music_ramp = 0;        /* gain actually applied to the last chunk */
     int         meter_peak = 0, meter_chunks = 0;
     const int   meter_every = 90;      /* ~2 s at 512-frame chunks / 24 kHz */
 
@@ -214,9 +244,20 @@ fmod_pump_thread(void *arg)
                 f_process(env, g_thiz, bb);                 /* fill chunk */
 
                 if (music != NULL && music_chunk != NULL) {
-                    if (pcm_read_loop(music, music_chunk, chunk_bytes))
-                        pcm_mix_s16(chunk, music_chunk, chunk_bytes / 2, music_gain);
-                    else {
+                    if (pcm_read_loop(music, music_chunk, chunk_bytes)) {
+                        /* Keep reading even at zero gain, so the bed stays in
+                         * sync with wall-clock time the way a real music source
+                         * does: turning the setting back up resumes where the
+                         * track would be, not where it was muted. */
+                        float   setting = g_music_volume;
+                        int     target  = setting < 0.0f ? music_gain
+                                                         : (int)(music_gain * setting);
+
+                        if (target != 0 || music_ramp != 0)
+                            pcm_mix_s16(chunk, music_chunk, chunk_bytes / 2,
+                                        music_ramp, target);
+                        music_ramp = target;
+                    } else {
                         fprintf(stderr, "[FMOD-MUSIC] fallback read failed; disabling\n");
                         fclose(music);
                         music = NULL;
