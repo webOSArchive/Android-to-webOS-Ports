@@ -158,17 +158,31 @@ refuses a same-or-lower version.
 
 ## Status
 
+Four games ship as one-tap `.ipk`s, each launching from the webOS launcher icon
+with sound:
+
+| Game | Engine | State |
+|---|---|---|
+| **Where's My Water?** | Disney/native | ✅ playable end-to-end, portrait, audio |
+| **Plants vs. Zombies HD** | Marmalade/Airplay | ✅ playable, audio, centred letterbox |
+| **Amazing Alex HD** | Rovio ka3d | ✅ playable, audio — ported in ONE pass |
+| **Temple Run 2** | Unity 3.5 + Mono | ✅ playable — portrait, touch/swipe/tilt, 3D, SFX, music, splash |
+| Where's My Water? 2 | same as WMW | ☐ reaches the level, stalls on multi-threaded GL loading |
+
+Capabilities the framework now has, all general rather than per-game:
+
 | Area | State |
 |---|---|
-| Boot / load native engine | ✅ |
-| Display — full-screen upright portrait | ✅ (render-to-portrait-FBO) |
-| Input — menus + in-level touch (carve + HUD) | ✅ |
-| Audio — music + SFX | ✅ (FMOD AudioTrack pump → lock-free ring → SDL) |
-| Packaging — one-tap `.ipk` from the launcher | ✅ |
-| Generalize to a 2nd game / de-hack | ☐ next (`plan/STAGE-5`) |
+| Boot / load native engine | ✅ bionic-linker-as-library + fake-JNI |
+| Display — full-screen upright portrait | ✅ render-to-FBO, ES1 *and* ES2 (shader) present |
+| Input — touch, swipe, tilt | ✅ PDL touch + PDL sensors |
+| Audio — music + SFX | ✅ FMOD AudioTrack pump → lock-free ring → SDL |
+| Host-library bridge (engine's own Mono/runtime) | ✅ `compat/hostlib.c` |
+| Boot splash during load | ✅ host-drawn, rides the present quad |
+| Packaging — one-tap `.ipk` from the launcher | ✅ `packaging/build-ipk.sh` |
 
-Worked example **Where's My Water?** is playable end-to-end with sound. See
-`apkenv/BUILD-STATE.md` and `plan/` for the full state and what's next.
+Start with `PORTING-PLAYBOOK.md` for the method. `apkenv/BUILD-STATE.md` and
+`plan/` carry the full state and what's next.
 
 ---
 
