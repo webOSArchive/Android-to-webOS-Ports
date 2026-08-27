@@ -516,3 +516,75 @@ control (`=Awake` prints `converting method UIWidget:Awake ()`); a probe that pr
 because it is misconfigured looks exactly like a probe that prints nothing because the method
 never ran. And watch for inlining: a small method inlined into its caller never appears.
 
+---
+
+# RELEASE 1.3.0 (2026-08-27) + the last session's lessons
+
+`apkenv/packaging/out/com.apkenv.templerun2_1.3.0_all.ipk` - installed and smoke-tested on device.
+Playable: launcher icon, portrait, touch menus, swipe, tilt steering, textured 3D via Unity's own
+GLES2 device, sound effects. **Music does not play** (see below); everything else works.
+The package ships no debug env - only `APKENV_HOST_MONO`.
+
+## THE find: `nativeInit(II)` is `(glesMode, splashMode)`, not `(width, height)`
+
+Read from `UnityPlayer$24`, the runnable `a(IZ)` queues to the GL thread: its two ints are
+`init(IZ)`'s glesMode argument (settings.xml `gles_mode` = 2) and
+`getSettings().getInt("splash_mode")` (= 1). **We passed the screen size there for the entire
+port.** The engine therefore saw `glesMode = 1024` - not 2, so it built its fixed-function device -
+and a splash mode of 768. The real surface size always arrived through `nativeResize`, which we
+already called correctly.
+
+Fixing the arguments makes the engine set its own device-select flag:
+`[UN-GLES2] device-select flag was 1 - no patch needed`. **The binary patch of
+`libunity+0x2d2f78` is now dead code on this build**, kept only as a self-skipping fallback.
+
+That is the real lesson of the whole renderer saga: we spent a session finding and patching the
+branch, when the branch was reading a value we were feeding it. **The engine was not choosing
+wrong - it was answering the question we actually asked.**
+
+## Two conclusions from earlier in this port that were WRONG
+
+Both were stated confidently in this document and are corrected here:
+
+1. **"FMOD never creates a stream thread."** A `/proc/self/task` sampler shows
+   `FMOD stream thr` (idling in `hrtimer_nanosleep`) and `asyncProcessor` (futex wait), plus
+   several `UnityMain` threads. apkenv's `pthread_create` log only sees threads created *through
+   its own hook*, so counting log lines counted a subset. **Count threads from `/proc`, not from
+   your own instrumentation.**
+2. **"The music data is read once and never again."** A seek probe cannot see *sequential* reads.
+   With per-fd byte accounting the total is **65,536 bytes - exactly one stream buffer** - primed
+   and then never consumed. Same shape of error as #1: the probe measured the wrong thing, and the
+   conclusion drawn from it was sharper than the evidence.
+
+## Music: the state it is actually in
+
+Not the pump (a meter shows SFX peaks and music silence), not file IO, not volume, not the game
+logic (`AudioManager:StartGameMusic` runs and is
+`musicSource.Stop(); musicSource.clip = <clip>; musicSource.Play()`), not `fmodInitJni` (a real
+contract gap, now closed), not a missing thread. **The stream is created, one 64 KB buffer is
+primed, its thread is alive and idle, and the channel never consumes.** Next probe would be the
+condition inside the splash/first-frame path (`libunity+0x1cfb00`, reached via `+0x229d2c` and
+`+0x275c14`) since splash and music both hang off the engine's first real frame.
+
+## Splash: same neighbourhood
+
+`assets/bin/Data/splash.png` (753 KB, stored uncompressed at `0x17790e4`) **is read** - the stack
+scan gives the chain - but nothing is drawn with it: the presents around `unityAndroidInit` issue
+**0 draw calls**, then 80 at the first real frame. Forcing extra presents there did not show it
+(and made the approach to the menu choppy - reverted).
+
+## Instrumentation left behind, all env-gated
+
+`APKENV_GL_DEBUG` (GL path marks, FBO binds, per-present draw counts), `APKENV_HOOK_DEBUG` (hook
+table resolution), `APKENV_TRACE_FILES` (+ mmap), `APKENV_TRACE_SEEK_RANGE=lo-hi` (+ per-fd byte
+accounting inside the range), `APKENV_AUDIO_METER`, `APKENV_THREAD_SAMPLE` (the `/proc` sampler),
+`APKENV_GL_SNAPSHOT`, `APKENV_UNITY_AUTOTAP`, plus `compat/stackscan.c` and `tools/ildump.py`.
+
+## Honest note on how this session ended
+
+After portrait and tilt landed, **many device cycles produced no user-visible change**. The
+`nativeInit` fix was real and retired the binary patch, but the splash and music work after it was
+churn: probe, deploy, read, repeat, without a hypothesis sharp enough to falsify in one run. The
+user called it, correctly. When a run stops changing what the user can see or hear, stop and say
+so rather than deploying again.
+

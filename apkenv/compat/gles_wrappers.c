@@ -2089,7 +2089,7 @@ void
 my_glBindFramebufferOES(GLenum target, GLuint framebuffer)
 {
     {   static int n;
-        if (n++ < 12)
+        if (n++ < 12 && getenv("APKENV_GL_DEBUG") != NULL)
             fprintf(stderr, "[FBO-OES] glBindFramebufferOES(%u) via the ES1 wrapper\n", framebuffer);
     }
     if (gp_enabled()) { gp_fbo = (int)framebuffer; }

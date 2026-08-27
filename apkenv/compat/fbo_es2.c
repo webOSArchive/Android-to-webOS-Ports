@@ -267,7 +267,7 @@ apkenv_fbo_es2_present(void)
         extern unsigned long apkenv_gl_draws;
         static unsigned long last_draws;
         n++;
-        if (n <= 12 || (n % 100) == 0) {
+        if ((n <= 12 || (n % 100) == 0) && getenv("APKENV_GL_DEBUG") != NULL) {
             f.glGetIntegerv(GL_FRAMEBUFFER_BINDING, &cur);
             fprintf(stderr, "[FBO2] present #%d: draws since last present=%lu, FRAMEBUFFER_BINDING=%d\n",
                     n, apkenv_gl_draws - last_draws, cur);

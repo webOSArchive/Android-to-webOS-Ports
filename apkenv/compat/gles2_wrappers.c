@@ -523,7 +523,8 @@ void apkenv_glpath_mark(const char *what)
     for (i = 0; i < n; i++)
         if (seen[i] == what) return;
     if (n < 16) seen[n++] = what;
-    fprintf(stderr, "[GLPATH] first %s\n", what);
+    if (getenv("APKENV_GL_DEBUG") != NULL)
+        fprintf(stderr, "[GLPATH] first %s\n", what);
 }
 
 void

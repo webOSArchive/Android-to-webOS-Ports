@@ -28,19 +28,18 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
   icon with audio, centered letterbox; `apkenv/packaging/out/com.apkenv.pvzhd_1.0.1_all.ipk`.
   Full trail: `plan/PVZ-HD-menu-freeze.md`. Module: `apkenv/modules/marmalade.c`.
 
-- **Temple Run 2 (Unity 3.5 + Mono) — FULLY PLAYABLE (2026-08-27):** `com.apkenv.templerun2` 1.1.2
-  — launcher icon, touch menus, textured 3D, swipe, tilt steering, and **portrait** via an ES2
-  render-to-FBO rotated present (`apkenv/compat/fbo_es2.c`; 768x1024 rotated is exactly 1024x768). The four fixes that got it
-  there: `nativeTouch`'s trailing int is the MotionEvent **source** (`0x1002`); **an ES2 context is
-  refused only when it is the first context in the process** (`apkenv_egl_warmup()` primes with
-  ES1); Unity picked its **fixed-function ES1 device** via one global byte at `libunity+0x2d2f74`
-  (patched in `modules/unity.c`) and then drew through `libGLES_CM` until the ES1 wrappers were
-  rebound to `libGLESv2` (`apkenv_gles1_bind_driver`); and **apkenv's accelerometer never worked on
-  webOS at all** — it used SDL's joystick API and webOS has no joydev, so it now goes through PDL
-  (`platform/common/pdl_accelerometer_impl.h`, general to every module) and `unity.c` feeds
-  `nativeSensor`. Full trail: **`plan/TEMPLERUN2-RENDER-INPUT.md`**; history `plan/TEMPLERUN2*.md`.
-  Tools: `apkenv/tools/tr2-run.sh`, `APKENV_GL_SNAPSHOT`, `APKENV_UNITY_AUTOTAP`,
-  `/media/internal/apkenv-tilt.conf`.
+- **Temple Run 2 (Unity 3.5 + Mono) — RELEASED 1.3.0 (2026-08-27), music open.**
+  `apkenv/packaging/out/com.apkenv.templerun2_1.3.0_all.ipk`: launcher icon, **portrait** (ES2
+  render-to-FBO rotated present, `apkenv/compat/fbo_es2.c`), touch menus, swipe, tilt steering
+  (PDL sensors — apkenv's SDL-joystick accelerometer never worked on webOS), textured 3D on
+  Unity's own GLES2 device, sound effects. **No music** — the stream is primed (64 KB) and its
+  channel never consumes; full evidence + the two conclusions that turned out wrong in
+  `plan/TEMPLERUN2-RENDER-INPUT.md`. Also no splash screen.
+  **The lesson worth carrying:** `nativeInit(II)` is `(glesMode, splashMode)`, NOT
+  `(width, height)` — passing the size made the engine pick its fixed-function renderer and skip
+  the splash, and cost a session of disassembly. See `PORTING-PLAYBOOK.md`.
+  Tools: `apkenv/tools/tr2-run.sh`, `tools/ildump.py`, `APKENV_GL_SNAPSHOT`, `APKENV_THREAD_SAMPLE`,
+  `APKENV_TRACE_SEEK_RANGE`, `APKENV_AUDIO_METER`, `APKENV_GL_DEBUG`.
 
 ## Where's My Water? (first port)
 - **Playable end-to-end with audio**, ships as `com.apkenv.wheresmywater` `.ipk` (launcher icon). Portrait via render-to-FBO; FMOD audio pump. Full writeup: `android-port-shim.md`, `apkenv/BUILD-STATE.md`, `plan/STAGE-*.md`.

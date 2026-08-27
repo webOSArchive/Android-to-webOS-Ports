@@ -137,7 +137,8 @@ hook_trace_resolve(const char *where, const char *sym, void *func)
     for (i = 0; i < sizeof(watch)/sizeof(watch[0]); i++) {
         if (strcmp(sym, watch[i]) != 0) continue;
         if (seen[i]++) return;
-        printf("[HOOKRES] %s(%s) -> %p\n", where, sym, func);
+        if (getenv("APKENV_HOOK_DEBUG") != NULL)
+            printf("[HOOKRES] %s(%s) -> %p\n", where, sym, func);
         return;
     }
 }
@@ -486,6 +487,7 @@ void hooks_init(void)
 
     libc_wrappers_init();
 
+    if (getenv("APKENV_HOOK_DEBUG") != NULL)
     {   /* prove the table answers for names that keep logging 'Unimplemented' */
         static const char *chk[] = { "pthread_cond_timeout_np",
                                      "__pthread_cond_timedwait_relative",

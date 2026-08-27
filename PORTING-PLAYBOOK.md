@@ -240,3 +240,44 @@ TouchPad — and the remaining work went straight back to being ordinary Java-co
 - [ ] Input pump on yield; dialogs answered; audio shape identified; display aspect declared.
 - [ ] Data tree extracted + music transcoded 44100/stereo; `packaging/<game>/` (appinfo, env).
 - [ ] One change per device test; results recorded in `plan/`.
+
+---
+
+## Lessons from Temple Run 2 (Unity 3.5 + Mono), 2026-08-27
+
+**Derive every native method's ARGUMENTS from the Java caller, not from its name.**
+`UnityPlayer.nativeInit(II)` looks like `(width, height)` and is `(glesMode, splashMode)`. Passing
+the screen size there made the engine build its fixed-function renderer (so every ES2-only shader
+drew as magenta error material) and skip its splash screen - and cost a whole session of
+disassembly to find and patch the branch that was faithfully reading the value we fed it.
+The same class of bug: `nativeTouch`'s trailing int is the MotionEvent **source** (`0x1002`), not
+padding. **Read the caller for each argument; a plausible signature is not a contract.**
+
+**Prefer fixing the contract over patching the engine.** Once `nativeInit` got real arguments, the
+binary patch that forced Unity's GLES2 device became unnecessary. A patch that works is evidence
+you have found the mechanism - not that you have found the cause.
+
+**Instrument the path the engine actually takes, and prove your probe works.**
+- A seek probe cannot see sequential reads (we concluded "read once, never again" from 22 seeks;
+  byte accounting showed a 64 KB buffer).
+- Counting `pthread_create` calls through apkenv's own hook counts a subset; `/proc/self/task`
+  showed the threads we had "proven" did not exist (with `comm` names like `FMOD stream thr` and
+  `wchan`, which is far better evidence anyway).
+- Always run a **positive control**: `MONO_VERBOSE_METHOD=<name>` prints nothing both when a
+  managed method is never called AND when the probe is misconfigured. `=Awake` proves the
+  mechanism before `=StartMainMenuMusic` is allowed to mean anything.
+- `__builtin_return_address(0)` must be taken in the wrapper itself; inside a helper it reports
+  the wrapper, and it silently "works" wherever the helper happens to be inlined.
+
+**Seeing the screen beats reasoning about it.** `APKENV_GL_SNAPSHOT=<frame>` (glReadPixels -> PPM)
+is the only way to see a GL app on webOS 3.0.5. Bind the WINDOW framebuffer before reading, or a
+render-to-FBO port captures the offscreen target at the wrong width and you get a tiled, skewed
+image that looks exactly like a broken renderer.
+
+**Managed code is inspectable.** `tools/ildump.py` resolves the raw metadata tokens in Mono's
+verbose dumps to `Class:Method` and finds a method's callers - no monodis needed. That is how
+"who starts the music" was answered.
+
+**Know when to stop.** If several device cycles in a row change nothing the user can see or hear,
+that is the signal to report the state and pick a different attack - not to deploy again.
+
