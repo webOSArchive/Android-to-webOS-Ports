@@ -927,7 +927,8 @@ unity_input(struct SupportModule *self, int event, int x, int y, int finger)
     int action = (event == ACTION_DOWN) ? 0 : (event == ACTION_UP) ? 1 : 2;
     jlong t = un_now_ms();
     static int logged = 0;
-    if (logged < 200 || action != 2) {   /* every DOWN/UP; first 200 MOVEs */
+    /* Bounded: this runs for the whole session and writes to /media/internal. */
+    if (logged < 200) {
         fprintf(stderr, "[UN-TOUCH] id=%d action=%d x=%d y=%d t=%lld src=0x%x %s\n",
                 finger, action, x, y, (long long)t, ANDROID_SOURCE_TOUCHSCREEN,
                 self->priv->nativeTouch ? "" : "(nativeTouch NULL - dropped)");
@@ -995,23 +996,66 @@ un_feed_tilt(struct SupportModule *self)
 {
     static const int d[16] = { 1, 1, 0, 1,  -1, 1, 1, 0,  -1, -1, 0, 1,  1, -1, 1, 0 };
     const float K = -1.0f / 9.80665f;
+    static int row = -1, invx, invy, loaded;
     float v[3] = { 0.0f, 0.0f, 0.0f };
     struct timespec ts;
-    int row, ix, iy;
+    int ix, iy;
     float x, y, z;
 
     if (self->priv->nativeSensor == NULL)
         return;
+
+    /* Calibration knobs. The device frame is settled by physically tilting, so
+     * make that loop cheap: as well as the env vars, re-read an optional file on
+     * /media/internal (writable, unlike the app dir) so the mapping can be
+     * changed on the device without repackaging - just relaunch.
+     *
+     *   row = which orientation row of the Java host's table to apply (0..3)
+     *   invx/invy = flip the steering / pitch axis after the remap
+     *
+     * File format, one per line: "row=0", "invx=1", "invy=0". */
+    if (!loaded) {
+        const char *e;
+        FILE *f;
+        loaded = 1;
+        /* Confirmed on device (2026-08-27): row 0 + inverted Y is what makes
+         * Temple Run 2 steer correctly. The game is portrait-built (the manifest
+         * declares portrait on every Unity activity) while we present a
+         * landscape surface, so its steering axis sits a quarter-turn from the
+         * one the reported orientation implies: with row 3 the roll landed on
+         * Input.acceleration.x while the axis the game actually reads carried
+         * gravity - a constant value, i.e. a constant drift, whose direction
+         * flipped with how the tablet was held. Row 0 puts the roll on Y and
+         * parks gravity on X; invy fixes the mirror. */
+        row = 0; invx = 0; invy = 1;
+        if ((e = getenv("APKENV_UNITY_TILT_ROW")) != NULL) row = atoi(e) & 3;
+        if ((e = getenv("APKENV_UNITY_TILT_INVX")) != NULL) invx = (*e != '0');
+        if ((e = getenv("APKENV_UNITY_TILT_INVY")) != NULL) invy = (*e != '0');
+        f = fopen("/media/internal/apkenv-tilt.conf", "r");
+        if (f != NULL) {
+            char line[128];
+            while (fgets(line, sizeof(line), f) != NULL) {
+                int val;
+                if (sscanf(line, " row = %d", &val) == 1) row = val & 3;
+                else if (sscanf(line, " invx = %d", &val) == 1) invx = (val != 0);
+                else if (sscanf(line, " invy = %d", &val) == 1) invy = (val != 0);
+            }
+            fclose(f);
+            fprintf(stderr, "[UN-TILT] /media/internal/apkenv-tilt.conf applied\n");
+        }
+        fprintf(stderr, "[UN-TILT] row=%d invx=%d invy=%d\n", row, invx, invy);
+    }
+
     if (!apkenv_accelerometer_get(&v[0], &v[1], &v[2]))
         return;
 
-    /* unity_jnienv_CallIntMethodV answers getOrientation() with 0. */
-    row = ((0 - 1) & 3);
     ix = d[row * 4 + 2];
     iy = d[row * 4 + 3];
     x = (float)d[row * 4 + 0] * K * v[ix];
     y = (float)d[row * 4 + 1] * K * v[iy];
     z = K * v[2];
+    if (invx) x = -x;
+    if (invy) y = -y;
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
     self->priv->nativeSensor(ENV_M, GLOBAL_M, (jfloat)x, (jfloat)y, (jfloat)z,
@@ -1019,7 +1063,7 @@ un_feed_tilt(struct SupportModule *self)
 
     if (getenv("APKENV_ACCEL_DEBUG") != NULL) {
         static int n;
-        if (n++ % 60 == 0)
+        if (n++ % 30 == 0)
             fprintf(stderr, "[UN-TILT] accel m/s2=(% .2f,% .2f,% .2f) -> "
                             "Input.acceleration g=(% .3f,% .3f,% .3f)\n",
                     v[0], v[1], v[2], x, y, z);

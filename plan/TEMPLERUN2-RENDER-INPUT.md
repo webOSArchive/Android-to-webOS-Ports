@@ -378,7 +378,19 @@ never calls it, `Input.acceleration` stays (0,0,0) forever, which is exactly wha
 Doing the remap here keeps us bit-identical to what the real Java host would have sent for the
 orientation we report, instead of inventing a convention.
 
-**Open: the axis convention of the TouchPad's sensor.** Resting propped up it reads
+**SOLVED - the axis convention (confirmed on device):** `row=0, invy=1`, now the module default.
+Derived, not guessed: a scripted tilt (neutral / left 3s / neutral / right 3s) logged with
+`APKENV_ACCEL_DEBUG=1` showed physical **left roll -> raw.y = +1**, right roll -> raw.y = -1, and
+row 3 was sending that to `Input.acceleration.x` with the correct sign - so the axis we had chosen
+was right and *the game was not reading it*. What gave it away was the resting frame: row 3 put a
+constant **-0.86** on Y, and a constant value on the axis a game steers with is precisely a constant
+drift. It also explained why the drift direction flipped between sessions - that Y carried
+`+raw.x`, the pitch/gravity axis, which changes sign with how upright the tablet is held. The game
+is portrait-built (manifest) while we present landscape, so its steering axis sits a quarter-turn
+from the one our reported orientation implies. Row 0 moves the roll onto Y and parks gravity on X;
+`invy` fixed the mirror. Two device runs, no rebuild between them.
+
+**Historical note on the axis convention:** Resting propped up it reads
 `raw g = (-0.86, +0.03, -0.62)`, which gives `Input.acceleration = (-0.03, -0.86, +0.62)` - a
 neutral steering axis and gravity down the screen, i.e. plausible, but only a physical roll
 proves which raw axis is the 1024 edge. `APKENV_ACCEL_MAP` permutes/negates axes at runtime
@@ -388,4 +400,15 @@ launch and an env edit, no rebuild.
 *Build-system footgun, hit again:* `build-webos.sh` rebuilds an object only when its **`.c`** is
 newer - it does not track headers. Editing a header-only impl and rebuilding silently keeps the
 old object; `touch` the `.c`.
+
+**Calibration loop that made this cheap.** `modules/unity.c` reads `row`/`invx`/`invy` from
+`/media/internal/apkenv-tilt.conf` as well as from env. The app directory is read-only and the env
+file ships inside the package, so without that file every experiment would have been a repackage +
+`palm-install`; with it, a mapping change is one `novacom put` and a relaunch. `row` selects among
+the same four orientation rows the real Java host supports, so no setting is a bespoke hack - the
+chosen one is exactly what Unity would receive on real hardware in that orientation. The file
+remains supported as an override; the shipped defaults need it absent.
+
+**Status: Temple Run 2 is fully playable** - menu, touch, textured 3D, and tilt steering.
+`com.apkenv.templerun2` **1.0.4**.
 
