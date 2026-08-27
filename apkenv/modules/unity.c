@@ -457,6 +457,24 @@ unity_jnienv_CallVoidMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
         un_prefs_save();
         return;
     }
+    /* UnityPlayer.setOrientation() only forwards to Android's
+     * Activity.setRequestedOrientation() - a windowing request with no return
+     * value the engine consumes, so a no-op is correct here (apkenv owns the
+     * framebuffer). The VALUE is worth knowing though: it is what the game
+     * thinks its orientation should be. ActivityInfo constants:
+     *   0=LANDSCAPE 1=PORTRAIT 6=SENSOR_LANDSCAPE 7=SENSOR_PORTRAIT
+     *   8=REVERSE_LANDSCAPE 9=REVERSE_PORTRAIT */
+    if (strcmp(p2->name,"setOrientation")==0) {
+        int o = va_arg(p3, int);
+        static int last = -1;
+        if (o != last) {
+            last = o;
+            fprintf(stderr, "[UN] setOrientation(%d) = %s (no-op; apkenv owns the framebuffer)\n",
+                    o, (o == 1 || o == 7 || o == 9) ? "PORTRAIT" :
+                       (o == 0 || o == 6 || o == 8) ? "LANDSCAPE" : "other");
+        }
+        return;
+    }
     /* Host UI affordances with no webOS equivalent; silently fine as no-ops.
      * Named here so they stop showing up as unanswered contract gaps. */
     if (strcmp(p2->name,"startActivityIndicator")==0 ||
@@ -646,6 +664,7 @@ unity_jnienv_GetStringUTFChars(JNIEnv *env, jstring string, jboolean *isCopy)
     }
     if (string == NULL) {
         fprintf(stderr, "[UN-JNI] GetStringUTFChars(NULL) -> \"\"\n");
+        if (isCopy) *isCopy = JNI_TRUE;
         return strdup("");
     }
     struct dummy_jstring *str = (struct dummy_jstring*)string;
@@ -653,7 +672,14 @@ unity_jnienv_GetStringUTFChars(JNIEnv *env, jstring string, jboolean *isCopy)
         fprintf(stderr, "[UN-JNI] GetStringUTFChars: jstring %p has NULL data\n",
                 (void *)string);
     MODULE_DEBUG_PRINTF(" \\-> %s\n", str->data);
-    return str->data;
+    /* Return a COPY, per the JNI contract - jni/jnienv.c does the same and says
+     * why. ReleaseStringUTFChars() free()s whatever we hand back, so returning
+     * str->data directly frees the jstring's OWN buffer: the next Get on that
+     * jstring reads freed memory, and the allocator aborts with
+     * "double free or corruption (fasttop)". That is exactly what happened on
+     * the first touch here - Unity Get/Releases the same jstring more than once. */
+    if (isCopy) *isCopy = JNI_TRUE;
+    return strdup(str->data ? str->data : "");
 }
 
 
