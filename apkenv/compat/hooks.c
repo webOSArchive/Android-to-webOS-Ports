@@ -124,6 +124,24 @@ hook_cmp(const void *p1, const void *p2)
 }
 
 #define HOOK_SIZE (sizeof(struct _hook))
+/* One-shot tracing of how the engine resolves a few decisive GL names, and to
+ * WHICH wrapper. Guessing which resolution path an engine uses has already
+ * produced two wrong conclusions in this port. */
+static void
+hook_trace_resolve(const char *where, const char *sym, void *func)
+{
+    static const char *watch[] = { "glDrawElements", "glDrawArrays", "glBindBuffer",
+                                   "glVertexAttribPointer", "glUseProgram", "glClear" };
+    static int seen[sizeof(watch)/sizeof(watch[0])];
+    size_t i;
+    for (i = 0; i < sizeof(watch)/sizeof(watch[0]); i++) {
+        if (strcmp(sym, watch[i]) != 0) continue;
+        if (seen[i]++) return;
+        printf("[HOOKRES] %s(%s) -> %p\n", where, sym, func);
+        return;
+    }
+}
+
 
 void *apkenv_get_hooked_symbol(const char *sym, int die_if_pthread)
 {
@@ -134,7 +152,7 @@ void *apkenv_get_hooked_symbol(const char *sym, int die_if_pthread)
             hooks_count, HOOK_SIZE, hook_cmp);
 
     if (result != NULL) {
-        return result->func;
+        { hook_trace_resolve("table", sym, result->func); return result->func; }
     }
 
     if (strstr(sym, "pthread") != NULL) {
@@ -161,8 +179,10 @@ void *apkenv_get_hooked_symbol_dlfcn(void *handle, const char *sym)
         if (builtin_lib_id == BUILTIN_LIB_GLESV1) {
             result = bsearch(&target, hooks_gles1, HOOKS_GLES1_COUNT,
                 HOOK_SIZE, hook_cmp);
-            if (result != NULL)
+            if (result != NULL) {
+                hook_trace_resolve("dlfcn/GLESv1", sym, result->func);
                 return result->func;
+            }
             return NULL;
         }
 #endif
@@ -170,8 +190,10 @@ void *apkenv_get_hooked_symbol_dlfcn(void *handle, const char *sym)
         if (builtin_lib_id == BUILTIN_LIB_GLESV2) {
             result = bsearch(&target, hooks_gles2, HOOKS_GLES2_COUNT,
                 HOOK_SIZE, hook_cmp);
-            if (result != NULL)
+            if (result != NULL) {
+                hook_trace_resolve("dlfcn/GLESv2", sym, result->func);
                 return result->func;
+            }
             /* A miss here can be the whole ballgame: an engine that probes for
              * an ES2 entry point and gets NULL concludes the device has no ES2
              * and builds its fixed-function renderer instead. */
@@ -238,6 +260,35 @@ void apkenv_set_active_gles_version(int v)
 #endif
 #ifdef APKENV_GLES2
     if (v == 2) gles_override_shared(hooks_gles2, HOOKS_GLES2_COUNT, 2);
+#endif
+
+#if defined(APKENV_GLES) && defined(APKENV_GLES2)
+    /* The main table is not the only way the engine reaches GL. libunity binds
+     * its GL imports per-library, which resolves through hooks_gles1 for every
+     * name libGLESv1_CM provides - so with an ES2 context and an ES2 program
+     * bound, glDrawArrays/glDrawElements were still being dispatched into
+     * libGLES_CM, which knows nothing about ES2 vertex attributes: the frame
+     * came out as a flat clear colour with no geometry at all.
+     *
+     * Point the SHARED names inside the ES1 table itself at the ES2 wrappers.
+     * ES1-only entries (glMatrixMode, glTexEnv, ...) stay as they are; an ES2
+     * device never calls them. */
+    if (v == 2) {
+        size_t i, changed = 0;
+        for (i = 0; i < HOOKS_GLES2_COUNT; i++) {
+            struct _hook key, *e;
+            key.name = hooks_gles2[i].name; key.func = NULL;
+            e = (struct _hook *)bsearch(&key, hooks_gles1, HOOKS_GLES1_COUNT,
+                                        HOOK_SIZE, hook_cmp);
+            if (e != NULL && e->func != hooks_gles2[i].func) {
+                e->func = hooks_gles2[i].func;
+                changed++;
+            }
+        }
+        if (changed != 0)
+            printf("GLES: %zu shared names in the ES1 table now dispatch to the "
+                   "ES2 wrappers\n", changed);
+    }
 #endif
 }
 

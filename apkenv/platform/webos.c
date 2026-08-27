@@ -37,6 +37,7 @@
 /* platform/webos_egl_shim.c: ES1/ES2 context probe, gated on APKENV_EGL_PROBE */
 void apkenv_egl_probe(const char *tag);
 void apkenv_egl_warmup(void);
+void apkenv_gles1_bind_driver(int gles_version);
 
 struct PlatformPriv {
     SDL_Surface *screen;
@@ -112,6 +113,9 @@ webos_init(int gles_version)
      * hook tables can give the ~68 shared GLES1/GLES2 names to the wrapper that
      * belongs to the live context. Must happen before any apk lib is loaded. */
     apkenv_set_active_gles_version(gles_version);
+    /* and point the ES1 wrappers' driver pointers at the live context's device
+     * library - the engine's GOT was bound before this context existed. */
+    apkenv_gles1_bind_driver(gles_version);
 
     apkenv_egl_probe("post-SetVideoMode");
 

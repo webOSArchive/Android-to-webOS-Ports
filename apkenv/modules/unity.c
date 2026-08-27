@@ -39,6 +39,9 @@
 #include <stdlib.h>
 #include <sys/time.h>
 #include <time.h>
+#include "../compat/hooks.h"
+#include <errno.h>
+#include <sys/mman.h>
 #include <limits.h>
 extern void apkenv_gl_probe_frame(unsigned long frame);
 
@@ -688,6 +691,104 @@ unity_jnienv_GetStringUTFChars(JNIEnv *env, jstring string, jboolean *isCopy)
     return strdup(str->data ? str->data : "");
 }
 
+/* ---- force Unity's GLES2 graphics device ----------------------------------
+ * Temple Run 2 ships 8 shaders whose ONLY subprograms are GLSL ES 2.0 (no
+ * fixed-function pass, no Fallback), so on Unity's fixed-function device they
+ * draw with the magenta error material. The engine picks the device here:
+ *
+ *   libunity+0x2d2f68  ldr  r3, [pc, #44]      ; -> global byte at +0x699de4
+ *   libunity+0x2d2f6c  add  r3, pc, r3
+ *   libunity+0x2d2f70  ldrb r3, [r3]
+ *   libunity+0x2d2f74  cmp  r3, #0
+ *   libunity+0x2d2f78  bne  +0x2d2f88          ; != 0 -> ES2 device init (+0x2c44ac)
+ *   libunity+0x2d2f7c  bl   +0x2b69b4          ; == 0 -> ES1 device init  <-- ours
+ *
+ * Found by instrumenting, not by reading: a one-shot stack scan at the first
+ * glGetString gave the chain +0x2b5ed0 (ES1 caps) <- +0x2b69c4 (ES1 device
+ * init) <- +0x2d2f80, and that frame's disassembly is the branch above. The
+ * two "Creating OpenGLES*.x graphics device" strings in libunity have NO code
+ * references (dead strings in a release build), which is why grepping for them
+ * found nothing.
+ *
+ * We set the flag AND force the branch: the flag so every other flag-dependent
+ * code path agrees, the branch so a later write to the flag cannot undo it.
+ * Only ever done when the live context really is ES2 - forcing the ES2 device
+ * onto an ES1 context would break everything. APKENV_UNITY_GLES2=0 disables.
+ *
+ * The offsets are build-specific, so every patched word is verified against its
+ * expected value first and the patch is skipped (loudly) on any mismatch. */
+#define UN_GLES2_BRANCH_OFF   0x2d2f78
+#define UN_GLES2_LDRB_OFF     0x2d2f70
+#define UN_GLES2_CMP_OFF      0x2d2f74
+#define UN_GLES2_FLAG_OFF     0x699de4
+#define UN_GLES2_BRANCH_ORIG  0x1a000002u   /* bne */
+#define UN_GLES2_BRANCH_NEW   0xea000002u   /* b   */
+#define UN_GLES2_LDRB_ORIG    0xe5d33000u
+#define UN_GLES2_CMP_ORIG     0xe3530000u
+
+static void
+un_force_gles2_device(void *addr_in_libunity)
+{
+    struct { const char *dli_fname; void *dli_fbase;
+             const char *dli_sname; void *dli_saddr; } info;
+    const char *env = getenv("APKENV_UNITY_GLES2");
+    unsigned char *base;
+    unsigned int *branch;
+    unsigned char *flag;
+    long pagesize = sysconf(_SC_PAGESIZE);
+
+    if (env != NULL && env[0] == '0') {
+        fprintf(stderr, "[UN-GLES2] disabled by APKENV_UNITY_GLES2=0\n");
+        return;
+    }
+    if (apkenv_active_gles_version() != 2) {
+        fprintf(stderr, "[UN-GLES2] live context is ES1 - leaving the engine on its "
+                        "fixed-function device (forcing ES2 here would draw nothing)\n");
+        return;
+    }
+    memset(&info, 0, sizeof(info));
+    if (addr_in_libunity == NULL ||
+        !apkenv_android_dladdr(addr_in_libunity, &info) || info.dli_fbase == NULL) {
+        fprintf(stderr, "[UN-GLES2] cannot locate libunity's base - not patching\n");
+        return;
+    }
+    base = (unsigned char *)info.dli_fbase;
+    branch = (unsigned int *)(base + UN_GLES2_BRANCH_OFF);
+    flag = base + UN_GLES2_FLAG_OFF;
+
+    if (*(unsigned int *)(base + UN_GLES2_LDRB_OFF) != UN_GLES2_LDRB_ORIG ||
+        *(unsigned int *)(base + UN_GLES2_CMP_OFF) != UN_GLES2_CMP_ORIG ||
+        *branch != UN_GLES2_BRANCH_ORIG) {
+        fprintf(stderr, "[UN-GLES2] libunity does not match the expected build "
+                        "(%08x/%08x/%08x) - NOT patching\n",
+                *(unsigned int *)(base + UN_GLES2_LDRB_OFF),
+                *(unsigned int *)(base + UN_GLES2_CMP_OFF), *branch);
+        return;
+    }
+
+    fprintf(stderr, "[UN-GLES2] libunity base=%p, device-select flag was %d\n",
+            (void *)base, (int)*flag);
+
+    /* the flag: make every flag-dependent path agree */
+    if (mprotect((void *)((unsigned long)flag & ~(unsigned long)(pagesize - 1)),
+                 pagesize, PROT_READ | PROT_WRITE) == 0)
+        *flag = 1;
+    else
+        fprintf(stderr, "[UN-GLES2] mprotect(flag) failed: %s\n", strerror(errno));
+
+    /* the branch: bne -> b, so the ES2 device is chosen regardless */
+    if (mprotect((void *)((unsigned long)branch & ~(unsigned long)(pagesize - 1)),
+                 pagesize, PROT_READ | PROT_WRITE | PROT_EXEC) == 0) {
+        *branch = UN_GLES2_BRANCH_NEW;
+        __builtin___clear_cache((char *)branch, (char *)branch + 4);
+        fprintf(stderr, "[UN-GLES2] forced the ES2 graphics device "
+                        "(flag=1, +0x%x bne -> b)\n", UN_GLES2_BRANCH_OFF);
+    } else {
+        fprintf(stderr, "[UN-GLES2] mprotect(branch) failed: %s\n", strerror(errno));
+    }
+}
+
+
 
 #define UNITYPLAYER_CLASS_NAME "com/unity3d/player/UnityPlayer"
 #define PLAYERPREFS_CLASS_NAME "com/unity3d/player/PlayerPrefs"
@@ -738,6 +839,8 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
     if (self->priv->initJni) { un_hookcheck("initJni"); fprintf(stderr, "[UN] initJni\n"); self->priv->initJni(ENV_M,GLOBAL_M); }
     if (self->priv->InitPlayerPrefs) { un_hookcheck("InitPlayerPrefs"); fprintf(stderr, "[UN] InitPlayerPrefs\n"); self->priv->InitPlayerPrefs(ENV_M,GLOBAL_M); }
     un_screen_w = width; un_screen_h = height;
+    un_force_gles2_device((void *)self->priv->nativeInit);
+
     un_hookcheck("nativeInit"); fprintf(stderr, "[UN] nativeInit(%d,%d)\n", width, height);
     self->priv->nativeInit(ENV_M,GLOBAL_M,width,height);
     /* onSurfaceCreated -> nativeRecreateGfxState, which the Java host runs on the
@@ -795,6 +898,7 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
 /* Android's MotionEvent.getEventTime() is SystemClock.uptimeMillis(), a
  * monotonic clock. Use the same base here so every time we hand the engine
  * comes from ONE clock (Stage T, plan/TEMPLERUN2-RENDER-INPUT.md). */
+
 static jlong
 un_now_ms(void)
 {

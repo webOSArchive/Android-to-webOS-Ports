@@ -33,23 +33,51 @@ static struct gles1_functions functions;
     functions . ext = (typeof(functions . ext))eglGetProcAddress(#ext); \
     WRAPPERS_DEBUG_PRINTF("%s is at 0x%x\n", #ext, functions . ext)
 
-#define GET_FUNC(name) \
-    functions.name = (void*)dlsym(h, #name)
+/* Which device library the ES1 wrappers forward to.
+ *
+ * The ~68 entry points GLES1 and GLES2 share exist in BOTH device libraries,
+ * and on this driver they are separate front-ends with separate state: calling
+ * libGLES_CM's glDrawArrays while an ES2 program and ES2 vertex attributes are
+ * bound draws nothing at all (measured: a frame of flat clear colour).
+ *
+ * Rebinding cannot be solved by choosing the right wrapper at symbol-resolution
+ * time: the engine's GOT is bound while the apk's libraries load, which is
+ * BEFORE the platform has created a context and therefore before anyone knows
+ * which context we got. So the wrappers stay where they are and we re-point the
+ * driver pointers they call through, once the context exists. */
+static void *gles_h_es1;
+static void *gles_h_prefer;      /* NULL = plain ES1 behaviour */
 
-void gles1_init(void)
+#define GET_FUNC(name)                                                        \
+    do {                                                                      \
+        void *f_ = NULL;                                                      \
+        if (gles_h_prefer != NULL) f_ = dlsym(gles_h_prefer, #name);          \
+        if (f_ == NULL && gles_h_es1 != NULL) f_ = dlsym(gles_h_es1, #name);  \
+        functions.name = (void *)f_;                                          \
+    } while (0)
+
+static void gles1_resolve(void);
+
+/* Point the shared entry points at the ES2 device library (ES1-only names fall
+ * back to libGLES_CM, which is correct - an ES2 device never calls them). */
+void apkenv_gles1_bind_driver(int gles_version)
 {
-    void *h = dlopen("libGLESv1_CM.so", RTLD_LAZY);
-    if (h == NULL) {
-        h = dlopen("libGLESv1_CM.so.1", RTLD_LAZY);
+    if (gles_version != 2) return;
+    if (gles_h_prefer == NULL) {
+        gles_h_prefer = dlopen("libGLESv2.so", RTLD_LAZY);
+        if (gles_h_prefer == NULL) {
+            fprintf(stderr, "[GLBIND] libGLESv2.so not available: %s\n", dlerror());
+            return;
+        }
     }
-    if (h == NULL) {
-	// Library name on Harmattan
-        h = dlopen("libGLES_CM.so", RTLD_LAZY);
-    }
-    if (h == NULL) {
-        fprintf(stderr, "libGLESv1_CM.so missing, recompile without APKENV_GLES\n");
-        exit(1);
-    }
+    gles1_resolve();
+    fprintf(stderr, "[GLBIND] ES1 wrappers now forward shared entry points to "
+                    "libGLESv2 (the live context)\n");
+}
+
+static void
+gles1_resolve(void)
+{
 
     GET_FUNC(glAlphaFunc);
     GET_FUNC(glClearColor);
@@ -197,6 +225,25 @@ void gles1_init(void)
     GET_FUNC(glViewport);
     GET_FUNC(glPointSizePointerOES);
 
+}
+
+void gles1_init(void)
+{
+    void *h = dlopen("libGLESv1_CM.so", RTLD_LAZY);
+    gles_h_es1 = h;
+    if (h == NULL) {
+        h = dlopen("libGLESv1_CM.so.1", RTLD_LAZY);
+    }
+    if (h == NULL) {
+	// Library name on Harmattan
+        h = dlopen("libGLES_CM.so", RTLD_LAZY);
+    }
+    if (h == NULL) {
+        fprintf(stderr, "libGLESv1_CM.so missing, recompile without APKENV_GLES\n");
+        exit(1);
+    }
+    gles_h_es1 = h;
+    gles1_resolve();
     init_extension(glIsRenderbufferOES);
     init_extension(glBindRenderbufferOES);
     init_extension(glDeleteRenderbuffersOES);
@@ -239,9 +286,83 @@ my_glAlphaFunc(GLenum func, GLclampf ref)
 #include <stdio.h>
 #include <stdlib.h>
 #include "etc1.h"
+#include <string.h>
 #include "hooks.h"
 
 void apkenv_glpath_mark(const char *what);
+
+/* Where in the ENGINE does an ES1-only call come from?  The engine builds its
+ * fixed-function device under an ES2 context and nothing in the log says why;
+ * the two "Creating OpenGLES*.x graphics device" strings in libunity have no
+ * code references at all (dead strings in the release build), so the branch
+ * cannot be found by grepping for them. Catching the call in the act gives the
+ * exact libunity offsets to disassemble instead. */
+/* A poor man's backtrace for bionic-loaded engine code: glibc's unwinder cannot
+ * walk libunity's frames (no exidx registered) and -fomit-frame-pointer makes
+ * __builtin_return_address(1) useless. Scan the stack for words that point into
+ * the engine and are preceded by a BL/BLX - the same technique apkenv's crash
+ * handler uses. Gives the call chain that chose the renderer. */
+static void
+apkenv_gl_stackscan(const char *what, void *ra0)
+{
+    struct { const char *dli_fname; void *dli_fbase;
+             const char *dli_sname; void *dli_saddr; } info;
+    unsigned long base, size = 0x600000;      /* libunity is ~6.8 MB */
+    unsigned long *sp;
+    int printed = 0, i;
+
+    memset(&info, 0, sizeof(info));
+    if (ra0 == NULL || !apkenv_android_dladdr(ra0, &info) || info.dli_fbase == NULL)
+        return;
+    base = (unsigned long)info.dli_fbase;
+    fprintf(stderr, "[GLSTACK] %s: %s base=0x%lx\n", what,
+            info.dli_fname ? info.dli_fname : "?", base);
+
+    sp = (unsigned long *)&sp;
+    for (i = 0; i < 1024 && printed < 24; i++) {
+        unsigned long v = sp[i];
+        if (v <= base || v - base >= size) continue;
+        /* Return addresses point just after a BL/BLX. Check the preceding word
+         * (ARM) or halfword pair (Thumb) so the stack's stale data is filtered. */
+        {
+            unsigned long prev4 = *(unsigned long *)((v & ~3UL) - 4);
+            unsigned short prevh = *(unsigned short *)(v - 4 + 2);
+            int arm_bl  = ((prev4 >> 24) & 0x0F) == 0x0B;
+            int arm_blx = (prev4 >> 25) == 0x7D;
+            int thumb_bl = (prevh & 0xD000) == 0xD000 || (prevh & 0xD000) == 0xC000;
+            if (!arm_bl && !arm_blx && !thumb_bl) continue;
+        }
+        fprintf(stderr, "[GLSTACK]   sp[%3d] = +0x%lx\n", i, v - base);
+        printed++;
+    }
+}
+
+/* NB: the return address MUST be taken in the wrapper itself and passed in.
+ * Taking it inside this helper reports the wrapper, not the engine - and it
+ * silently "worked" for one call site only because that one got inlined. */
+static void
+apkenv_gl_caller_at(const char *what, void *ra0)
+{
+    static int done;
+    void *ra[3];
+    int i;
+    if (done) return;
+    done = 1;
+    ra[0] = ra0;
+    ra[1] = ra[2] = NULL;
+    apkenv_gl_stackscan(what, ra[0]);
+    for (i = 0; i < 3; i++) {
+        struct { const char *dli_fname; void *dli_fbase;
+                 const char *dli_sname; void *dli_saddr; } info;
+        memset(&info, 0, sizeof(info));
+        if (ra[i] != NULL && apkenv_android_dladdr(ra[i], &info) && info.dli_fname != NULL)
+            fprintf(stderr, "[GLCALLER] %s ra[%d]=%p = %s+0x%x %s\n", what, i, ra[i],
+                    info.dli_fname, (unsigned)((char *)ra[i] - (char *)info.dli_fbase),
+                    info.dli_sname ? info.dli_sname : "");
+        else
+            fprintf(stderr, "[GLCALLER] %s ra[%d]=%p (unresolved)\n", what, i, ra[i]);
+    }
+}
 
 unsigned long gp_draws, gp_verts, gp_draws2, gp_verts2;
 int gp_vp2[4];
@@ -986,6 +1107,7 @@ void
 my_glEnableClientState(GLenum array)
 {
     apkenv_glpath_mark("glEnableClientState (ES1 fixed-function path)");
+    apkenv_gl_caller_at("glEnableClientState", __builtin_return_address(0));
     WRAPPERS_DEBUG_PRINTF("glEnableClientState(0x%x)\n", array);
     functions.glEnableClientState(array);
 }
@@ -1096,6 +1218,11 @@ my_glGetString(GLenum name)
 {
     const GLubyte *r;
     WRAPPERS_DEBUG_PRINTF("glGetString(%d)\n", name);
+
+    {
+        static int once;
+        if (!once) { once = 1; apkenv_gl_caller_at("glGetString", __builtin_return_address(0)); }
+    }
 
     /* THE renderer-selection bug. An engine that carries both renderers asks
      * the device what it is and believes the answer. libunity binds glGetString
