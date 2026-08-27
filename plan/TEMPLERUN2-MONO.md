@@ -391,8 +391,41 @@ failing to start, and `apkenv.c` gained a module GLES preference + `APKENV_GLES_
 Fortunately Unity 3.5's libunity carries **both** renderers (11 fixed-function imports and 14
 shader imports) and picks fixed-function here — `glCreateShader` is never called.
 
-### Open
-- **Touch does nothing on the title screen.** `nativeTouch` signature `(IFFIJI)V` matches the
+## 8. State at end of session (2026-08-27) — RENDERING, not yet playable
+
+On the device: **the Temple Run 2 title screen and menu render**, audio pump is up, the
+render loop is stable (~10k draw calls / 14.5M verts per 600 frames, no crashes over
+2400+ frames). Getting there took everything in section 7.
+
+**Known-wrong, in priority order:**
+1. **Most of the screen is pink/purple; 3D geometry shows as silhouettes only.** UI text
+   (title, menu options) renders correctly, so *some* textures are fine — it is the 3D
+   scene that is untextured/miscoloured. NOT the ETC1 decoder: `tools/etc1test.c` verifies
+   it against spec-derived vectors (differential and individual modes, subblock flip,
+   clamping) and `glCompressedTexImage2D` now reports **0 GL errors** where it previously
+   failed on every texture. Next suspects, in order: (a) ETC1+alpha — Unity splits alpha
+   into a second ETC1 texture, and uploading RGB where RGBA was expected would break
+   blending; (b) `glTexEnv` combine modes on the fixed-function path; (c) the uncompressed
+   uploads (`GL_UNSIGNED_SHORT_4_4_4_4` / `5_5_5_1` were seen). Measure texture-by-texture
+   before changing anything.
+2. **Portrait.** Temple Run 2 is a portrait game shown on the landscape framebuffer. The
+   render-to-FBO + one-rotated-blit path already exists for WMW
+   (`module_hacks.render_to_fbo`/`fbo_w`/`fbo_h`) and is GLES1-only — which is fine, since
+   Unity uses the fixed-function renderer here. Not yet enabled for the unity module.
+3. **Touch does nothing, and it is NOT the Unity contract.** `nativeTouch`'s signature
+   `(IFFIJI)V` matches the module typedef exactly, `module->input` is wired, and
+   `UnityPlayer.dispatchTouchEvent` confirms the argument order
+   (`nativeTouch(pointerId, x, y, action, eventTime, extra)`, queued to the GL thread).
+   The problem is upstream: **SDL delivers no events at all** — `ev_total=1` after 2400
+   polls, and that one event is `SDL_VIDEOEXPOSE`. There is **no `SDL_ACTIVEEVENT`**, i.e.
+   the app never gains input focus. Running foreground instead of detached makes no
+   difference (tested — theory refuted). Leading theory: a novacom-launched process renders
+   but is never given input focus by LunaSysMgr; input may require launching from the
+   **launcher as a packaged `.ipk`**. Packaging is the next step and would test this for
+   free. Diff against a known-good app (WMW/PvZ/Alex) launched both ways to confirm.
+
+### Superseded open item
+- **(resolved) Touch does nothing on the title screen.** `nativeTouch` signature `(IFFIJI)V` matches the
   module's typedef exactly and `module->input` is wired, so the shape is right; the open
   questions are whether the events arrive (`[SDLHB]` showed `ev_total=1`) and whether Unity
   wants pixels or another coordinate space. Next: log every `unity_input()` call, and read
