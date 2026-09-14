@@ -31,6 +31,11 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
   silently killed every MP3 track. Outdoor lighting is slightly less warm than on a Mali tablet —
   parked by the user. Trail: `plan/ARALON.md`; new tools: `APKENV_UNITY_ICALL_TRACE`,
   `APKENV_GL_UPLOADCHECK`, and the Android reference-device method in `PORTING-PLAYBOOK.md`.
+- **Screenshots of a running game: `apkenv/tools/grab.sh [<name>]`.** The on-device screenshot
+  (and `/dev/fb0`) misses the GL layer, so the game reads its own frame back: the script drops
+  `/media/internal/.apkenv/grab` over novacom, the render loop consumes it within ~0.5 s and writes
+  the next frame, and the script saves a PNG under `apkenv/packaging/out/screenshots/` (gitignored).
+  Always on in binaries built since 2026-09-14; shipped packages older than that lack it.
 - **Amazing Alex HD (Rovio ka3d) — ported in ONE PASS (2026-08-26)** via the playbook: booted, music,
   playable on the first device launch; `apkenv/packaging/out/com.apkenv.amazingalex_1.0.0_all.ipk`.
   Trail: `plan/AMAZING-ALEX.md`. Module: `apkenv/modules/angrybirds.c` (now in the webOS build).

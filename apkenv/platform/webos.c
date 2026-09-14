@@ -24,6 +24,7 @@
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #include <SDL.h>
 #include <PDL.h>
@@ -284,17 +285,26 @@ webos_request_text_input(int is_password, const char *text,
  *
  *   APKENV_GL_SNAPSHOT=<frame>[,<frame>...]  writes /media/internal/apkenv-snap-<n>.ppm
  *
+ * On demand, always on: create GRAB_TRIGGER (tools/grab.sh does it over
+ * novacom) and the next frame lands in GRAB_OUT. The on-device screenshot
+ * misses the GL layer for the same reason, so this is the way to take a
+ * screenshot of a running game.
+ *
  * glReadPixels is resolved from the library that owns the live context - the
  * ES1 and ES2 device libs are separate front-ends and only one is correct. */
+#define GRAB_TRIGGER "/media/internal/.apkenv/grab"
+#define GRAB_OUT     "/media/internal/apkenv-grab.ppm"
+#define GRAB_POLL    15   /* frames between checks for the trigger: ~0.5 s */
+
 static void
-webos_snapshot(unsigned long frame)
+webos_snapshot(const char *path)
 {
     static void (*read_pixels)(int, int, int, int, unsigned, unsigned, void *);
     static int resolved;
     int w = priv.screen ? priv.screen->w : 0;
     int h = priv.screen ? priv.screen->h : 0;
     unsigned char *px, *row;
-    char path[128];
+    char tmp[160];
     FILE *f;
     int y;
 
@@ -320,9 +330,10 @@ webos_snapshot(unsigned long frame)
     /* GL_RGBA / GL_UNSIGNED_BYTE is the one combination ES guarantees. */
     read_pixels(0, 0, w, h, 0x1908 /*GL_RGBA*/, 0x1401 /*GL_UNSIGNED_BYTE*/, px);
 
-    snprintf(path, sizeof(path), "/media/internal/apkenv-snap-%lu.ppm", frame);
-    f = fopen(path, "wb");
-    if (f == NULL) { free(px); return; }
+    /* Write aside and rename, so a reader polling for `path` never gets half a frame. */
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    f = fopen(tmp, "wb");
+    if (f == NULL) { free(px); apkenv_fbo_es2_bind_offscreen(); return; }
     fprintf(f, "P6\n%d %d\n255\n", w, h);
     /* GL origin is bottom-left; PPM is top-down. */
     for (y = h - 1; y >= 0; y--) {
@@ -332,6 +343,7 @@ webos_snapshot(unsigned long frame)
             fwrite(row + x * 4, 1, 3, f);
     }
     fclose(f);
+    rename(tmp, path);
     free(px);
     apkenv_fbo_es2_bind_offscreen();
     fprintf(stderr, "[SNAP] wrote %s (%dx%d)\n", path, w, h);
@@ -363,8 +375,15 @@ webos_update()
     apkenv_fbo_present();
 
     frame++;
-    if (webos_snapshot_wanted(frame))
-        webos_snapshot(frame);   /* before the swap: the back buffer still holds it */
+    /* before the swap: the back buffer still holds the frame */
+    if (webos_snapshot_wanted(frame)) {
+        char path[64];
+        snprintf(path, sizeof(path), "/media/internal/apkenv-snap-%lu.ppm", frame);
+        webos_snapshot(path);
+    }
+    /* unlink is the check and the consume in one call: a missing trigger costs one syscall */
+    if (frame % GRAB_POLL == 0 && unlink(GRAB_TRIGGER) == 0)
+        webos_snapshot(GRAB_OUT);
 
     /* APKENV_OPAQUE_PRESENT=1: present an opaque frame. The webOS compositor
      * blends the GL layer by its alpha channel; Android's never does, so a game
