@@ -1,7 +1,7 @@
 # PORTING-PLAYBOOK.md — how to bring the *next* Android NDK game to webOS
 
-Distilled from two shipped ports (Where's My Water?, Plants vs. Zombies HD) and one that stalled
-(WMW2). `android-port-shim.md` is the architecture field guide; this is the **method** — what to
+Distilled from the shipped ports (Where's My Water?, Plants vs. Zombies HD, Amazing Alex HD, Temple
+Run 2, Aralon) and one that stalled (WMW2). `android-port-shim.md` is the architecture field guide; this is the **method** — what to
 do, in what order, and the traps that cost whole sessions. Read this before touching a device.
 
 ## 0. The one rule
@@ -215,6 +215,18 @@ Memory: PvZ needs ~450 MB free; `requiredMemory` in `appinfo.json` makes webOS r
   `sudo systemctl restart novacomd`. Always run device commands under `timeout`, and run long-lived
   GUI binaries detached device-side (`( ./apkenv … & ); sleep N; killall apkenv`) so the session
   always returns.
+  **(4)** `novacom: unexpected EOF from server` is how novacom reports a remote **non-zero exit**
+  (`pidof` finding nothing, `ls` of a missing file), not a dead link — `novacom -l` tells the two
+  apart.
+- **Binary-only iterations on an installed app:** `novacom put` the new `apkenv` into
+  `/media/cryptofs/apps/usr/palm/applications/<appid>/` and `palm-launch`; rebuild the package only
+  when the env or assets change. A put over a binary a live process still holds fails (`file open
+  failed`), and a script that carries on launches the **old binary with the new env** — a wasted run
+  (Aralon A8). Kill until `pidof apkenv` is empty, push, and **refuse to launch unless the md5 on the
+  device matches** the local build.
+- **Big packages:** a 291 MB `.ipk` (Aralon, OBB inside) spends ~5 min in the USB copy and ~3 more
+  while the device unpacks it. An install timeout shorter than that launches a half-installed app
+  (`tools/tr2-run.sh` takes `INSTALL_TIMEOUT`, default 1800 s).
 - Dev harness: `/var/apkenv2/{apkenv,libs/webos,play-*.sh}` + apk on `/media/internal` + data tree
   in `/media/internal/.apkenv/<apk>/`; log to `/media/internal/apkenv-<name>.log`. A re-flashed
   device loses `/var` — rebuild the harness from the installed WMW `.ipk`'s `libs/webos`.
@@ -294,8 +306,20 @@ TouchPad — and the remaining work went straight back to being ordinary Java-co
 - [ ] Any generated `EXTRAS=` payload (decoded audio, splash) has a **script** that rebuilds it and
       verifies a checksum — never a lone copy in `packaging/stage/`, which every build wipes.
 - [ ] One change per device test; results recorded in `plan/`.
+- [ ] **Unity?** Which host generation (`nativeSetInputCanceled` in the native table = Unity 4's
+      order); add `plan/<game>-mono-imports.txt` and regenerate `compat/mono_symbols.h`; IL-scan the
+      managed DLLs for the `AndroidJavaObject`/`AndroidJavaClass` calls the reflection bridge must
+      answer.
+- [ ] **Expansion file?** `main.<ver>.<pkg>.obb` → `EXTRAS=`, `APKENV_UNITY_OBB`, `APKENV_UNITY_PACKAGE`;
+      budget install time for the package size.
+- [ ] **Effects but no music** → thread creation first (`APKENV_PTHREAD_STACK_CLAMP=1`), then the
+      audio path. "Is X supposed to be here?" → play the original apk on a real Android device.
+- [ ] Visual claims come from `tools/grab.sh`, never the on-device screenshot.
 - [ ] Ship check: unpack the final `.ipk` and read its `apkenv.env` — no debug/instrumentation vars;
-      install it so the device runs what ships; clear `apkenv-snap-*.ppm` debris.
+      install it so the device runs what ships; clear `apkenv-snap-*.ppm`/`apkenv-grab.ppm` debris.
+- [ ] **Fresh-install check before calling it released:** uninstall (`palm-install -r`), move the save
+      dir aside, install, verify the installed binary's md5 and env on the device, launch on the fresh
+      profile, and confirm the fix's own log line *and* what the player sees and hears.
 
 ---
 
@@ -342,7 +366,8 @@ which needs no timer. Decode the image to raw RGB at package time, bottom row fi
 **Seeing the screen beats reasoning about it.** `APKENV_GL_SNAPSHOT=<frame>` (glReadPixels -> PPM)
 is the only way to see a GL app on webOS 3.0.5. Bind the WINDOW framebuffer before reading, or a
 render-to-FBO port captures the offscreen target at the wrong width and you get a tiled, skewed
-image that looks exactly like a broken renderer.
+image that looks exactly like a broken renderer. For a running game, on demand:
+`tools/grab.sh` (see the Aralon lessons below).
 
 **Managed code is inspectable.** `tools/ildump.py` resolves the raw metadata tokens in Mono's
 verbose dumps to `Class:Method` and finds a method's callers - no monodis needed. That is how
@@ -350,4 +375,75 @@ verbose dumps to `Class:Method` and finds a method's callers - no monodis needed
 
 **Know when to stop.** If several device cycles in a row change nothing the user can see or hear,
 that is the signal to report the state and pick a different attack - not to deploy again.
+
+---
+
+## Lessons from Aralon (Unity 4.0.1 + Mono), 2026-09-14
+
+Full trail: `plan/ARALON.md`. Everything below is gated (Unity 4 host detection or an opt-in env
+var), so Temple Run 2's path is unchanged.
+
+**Same engine family is not the same host contract.** Read the new generation's `UnityPlayer.smali`;
+don't reuse the last port's call order. Unity 4's host calls `nativeResize` and one `nativeRender`
+*before* `unityAndroidInit` (`onSurfaceChanged` and the first `onDrawFrame` both run before init), and
+that pre-init resize is the only thing that builds the loading-screen blitter. Skipping it gave a
+SIGSEGV inside `unityAndroidPrepareGameLoop` (a NULL global at `libunity+0x78883c`). Unity 3.5 resized
+*after* prepare. `modules/unity.c` detects the generation by `nativeSetInputCanceled` in the native
+table and follows that host's order. *A native's behaviour can depend on engine state: "we call it"
+is not "we call it when the host does."* Other Unity 4 deltas: `unityAndroidInit` returns `Z`, and
+each OBB is registered with a second `nativeFile(path)`.
+
+**The Java contract has a hidden half: reflection.** §2's grep finds the Java methods the *engine*
+names. Unity 4's C# scripts reach Android through `AndroidJavaObject`, i.e. Unity's
+`ReflectionHelper.getMethodID/getFieldID/getConstructorID` → `FromReflectedMethod/Field` →
+`Call*MethodA`/`NewObjectA`/`Get*Field`. The targets (`getWindowManager`, `getMetrics`,
+`widthPixels`) are strings in the game's managed DLLs, not in the smali host or libunity. Under a fake
+JNI every link returns 0/NULL silently. Aralon read a 0×0 `DisplayMetrics`, sized its whole GUI from
+it, and showed an **invisible menu that ignored taps**, while the 3D scene rendered perfectly and taps
+did reach `nativeTouch`. Tells in the game's own log: `JNI: Unable to find method id for
+'getMetrics'`, `Init'd AndroidJavaObject with null ptr!`. Find the calls up front by IL-scanning the
+DLLs (`tools/ildump.py`) for `AndroidJavaObject`/`AndroidJavaClass` users. The bridge in
+`modules/unity.c` answers by name; extend it for the next game's calls. `NewGlobalRef` must return
+the object it was given: NULL for a real object breaks every AndroidJavaObject a script keeps.
+
+**Exported is not bridged.** The host Mono exported all 119 symbols Aralon's libunity imports, and the
+first run still died with `cannot locate 'mono_string_new_len'`: the bridge list was TR2's. Each Unity
+port adds `plan/<game>-mono-imports.txt` (`comm -12 <(libunity UND) <(host libmono DEF)`).
+`tools/gen-mono-hooklist.sh` with no arguments emits the union. Rebuild afterwards, because the build
+does not track headers (§5).
+
+**Expansion files (OBB).** Games over Google Play's apk size limit keep their data in
+`main.<versionCode>.<package>.obb`, a zip. Ship it via `EXTRAS=` (lands in `android/extras/`), point
+`APKENV_UNITY_OBB` at it, and set `APKENV_UNITY_PACKAGE`. It is most of the install: 273 of Aralon's
+283 MB on the device. Test the install time before trusting a script's timeout.
+
+**A feature can fail silently into a field.** Unity stored FMOD's `createSound` failure in the
+AudioManager and kept a "ready" zero-length clip, so music was simply absent, with nothing in the
+log. When something the player expects is missing and nothing complains, look for where the engine
+*stores* errors (§4 Audio has the whole chain, the stack-size cause, and the icall tracer that
+exposed it).
+
+**Screenshots: read the GL frame, and trust the eye on the panel.** The on-device screenshot tool
+does not capture the GL layer faithfully. Aralon's ground came out solid black in a capture, the user
+saw it merely darker, and a "terrain is not drawn" theory built on the capture cost three runs
+(upload check, opaque present) before the user corrected it. Take every screenshot with
+`tools/grab.sh` (a GL readback of the running game, all layers, 1024×768 PNG). For a brightness or
+colour difference against another device, the user's eyes on both panels are the measurement: a
+Mali tablet's panel is not the TouchPad's.
+
+**Refuted for Aralon's silent music. Don't re-chase these in the next game until the clamp is on:**
+volume 0, the music option off, music never requested, the bridged libm, OpenSL decoding, the idle
+`FMOD stream thr`, lost `asyncProcessor` wakeups, and the CPU count (`/sys/devices/system/cpu/present`
+is missing on webOS; `APKENV_SYS_CPU=1` answers it faithfully but was not the cause). What cracked it
+was a **thread the Android reference had and we didn't**.
+
+**Diagnostics added (all opt-in, all off in the release):**
+- `APKENV_UNITY_ICALL_TRACE`: audio icalls plus FMOD's stored error.
+- `APKENV_GL_UPLOADCHECK`: `glGetError` around every texture/buffer upload in *both* wrapper tables,
+  with errors handed back on the engine's next `glGetError` and a format census.
+- `APKENV_TRACE_SEEK_RANGE`: up to 16 ranges, with per-range byte totals.
+- `APKENV_SYS_CPU`.
+- `APKENV_OPAQUE_PRESENT`: alpha forced to 1 before the swap, for a game whose framebuffer alpha
+  lets the compositor show through.
+- `tools/grab.sh`.
 
