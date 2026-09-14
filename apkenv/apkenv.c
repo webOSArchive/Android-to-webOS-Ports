@@ -948,6 +948,11 @@ int main(int argc, char **argv)
     
     hooks_init();
 
+    /* Unity audio icall tracer (compat/icall_trace.c, APKENV_UNITY_ICALL_TRACE=1).
+     * Must precede the bridge: it hooks mono_add_internal_call, and the bridge
+     * leaves already-hooked names alone. A no-op unless the env var is set. */
+    { extern void apkenv_icall_trace_install(void); apkenv_icall_trace_install(); }
+
     /* --- host-library bridge (see compat/hostlib.h) --------------------------
      * Must run BEFORE any apk library is dlopen()ed: the bionic linker consults
      * the hook table ahead of library symbols for every relocation, so the

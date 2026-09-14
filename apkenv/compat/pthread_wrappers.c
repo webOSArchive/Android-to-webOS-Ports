@@ -301,9 +301,48 @@ int apkenv_my_pthread_attr_getschedparam(pthread_attr_t const *__attr, struct sc
     return pthread_attr_getschedparam(realattr, param);
 }
 
+/* bionic grants any stack from its own (smaller) minimum; glibc rejects
+ * anything below PTHREAD_STACK_MIN (16384 on this toolchain) with EINVAL.
+ * FMOD asks for an 8192-byte stack for its "FMOD file thread" and maps ANY
+ * pthread_attr_* failure to FMOD_ERR_INTERNAL (33), so under glibc the thread
+ * is never created and every sound needing async file I/O - Aralon's MPEG music
+ * - fails to load, silently (plan/ARALON.md, A12).
+ *
+ * Raising the request only to glibc's minimum is NOT enough (A13): the thread
+ * was created and the process died silently before the thread's first log
+ * line. A bionic stack holds only the thread's own frames; a glibc stack also
+ * holds the thread descriptor, and every apkenv-created thread starts in
+ * apkenv's logging trampoline, whose fprintf to UNBUFFERED stderr makes glibc
+ * put an 8 KB buffer on the stack. So small requests get a generous floor -
+ * still tiny against glibc's 8 MB default, and committed lazily.
+ * Opt-in (APKENV_PTHREAD_STACK_CLAMP=1) so shipped ports stay byte-for-byte. */
+#include <limits.h>
+#ifndef PTHREAD_STACK_MIN
+#define PTHREAD_STACK_MIN 16384
+#endif
+#define APKENV_STACK_FLOOR (128 * 1024)
 int apkenv_my_pthread_attr_setstacksize(pthread_attr_t *__attr, size_t stack_size)
 {
+    static int clamp = -1;
     pthread_attr_t *realattr = (pthread_attr_t *) *(unsigned int *) __attr;
+
+    if (clamp < 0) {
+        const char *e = getenv("APKENV_PTHREAD_STACK_CLAMP");
+        clamp = (e != NULL && e[0] == '1');
+    }
+    if (clamp && stack_size < APKENV_STACK_FLOOR) {
+        static size_t logged[8];
+        static int nlogged;
+        int i, seen = 0;
+        for (i = 0; i < nlogged; i++) if (logged[i] == stack_size) seen = 1;
+        if (!seen && nlogged < 8) {
+            logged[nlogged++] = stack_size;
+            fprintf(stderr, "[PTHREAD] setstacksize(%lu) too small for a glibc thread -> %lu "
+                            "(bionic sizes stacks for the thread's own frames only)\n",
+                    (unsigned long)stack_size, (unsigned long)APKENV_STACK_FLOOR);
+        }
+        stack_size = APKENV_STACK_FLOOR;
+    }
     return pthread_attr_setstacksize(realattr, stack_size);
 }
 

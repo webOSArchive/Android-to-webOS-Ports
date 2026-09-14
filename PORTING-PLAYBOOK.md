@@ -138,6 +138,29 @@ empty strings where the game re-prompts.
 - **Assets are not always one file per file.** That music lived in
   `sharedassets0.assets.resS` as **two concatenated MP3s with no container** (Unity keeps the
   offsets elsewhere); decoding it whole silently yields both tracks back to back. Split first.
+- **Effects play but music is silent? Check thread creation before the audio path.** Aralon (Unity 4)
+  had exactly that, and the cause was not audio at all: FMOD asks for an **8 KB** stack for its "FMOD
+  file thread" (sized for bionic), glibc rejects stacks under 16 KB with EINVAL, and FMOD maps *any*
+  `pthread_attr_*`/`pthread_create` failure to `FMOD_ERR_INTERNAL` (33). Every sound that needs async
+  file I/O (MP3 music, streams) then fails `createSound` — and Unity 4 stores that failure silently
+  (AudioManager+156/+180) and keeps a "ready" clip of length 0, so `Play()` does nothing and nothing is
+  logged. Raising only to 16 KB was not enough (the process died at thread start: glibc also keeps the
+  thread descriptor on the stack, and apkenv's trampoline logs via unbuffered stderr, which puts an
+  8 KB buffer on the stack). Fix: `APKENV_PTHREAD_STACK_CLAMP=1` → 128 KB floor
+  (`compat/pthread_wrappers.c`). Tell-tale in a thread sample: a thread the real device has (`FMOD
+  file thread`) that yours never gets. Only 3 `pthread_create` calls in the log while more threads
+  exist is the same clue: the failing thread dies *before* `pthread_create`.
+- **Watching a Unity engine's audio without patching it:** libunity calls FMOD directly (no PLT), so
+  FMOD itself can't be interposed, but every `UnityEngine.AudioSource/AudioClip` internal call is
+  registered through `mono_add_internal_call` — which, with `APKENV_HOST_MONO`, is ours.
+  `APKENV_UNITY_ICALL_TRACE=1` (`compat/icall_trace.c`) puts logging trampolines in front of them and
+  reports each `Play()` with the clip's length, `isReadyToPlay` and `isPlaying` afterwards. Always run
+  the positive control (a sound effect's `PlayOneShot` length) before trusting a 0.
+- **A real Android device is the fastest oracle.** Install the original apk (+ OBB at
+  `/sdcard/Android/obb/<pkg>/`) with `adb`, play the same stretch, and diff: `logcat` (Unity's own
+  messages), `/proc/<pid>/task/*/{comm,stat}` for thread names and CPU (readable without root), and the
+  AudioTrack setup lines. It turned "should there be music here?" into a fact, and showed the one
+  missing thread.
 
 **GL wrappers: never register two tables that share names.** `gles_mapping.h` and
 `gles2_mapping.h` share **68** symbols (`glClear`, `glDrawArrays`, `glViewport`,

@@ -21,6 +21,16 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
 - **`android-candidates/`** — candidate `.apk`s for porting (incl. `PvZ HD v.1.1 ANDROID.apk`, the shipped one): `wheresmywater_1.0.2.apk` (the active spike), `wheresmywater2_1.0.1.apk`, `cut-the-rope_2.3.apk`, `fruitninja_1.8.8.apk`, `bejeweledblitz_1.4.4.apk`, `flappybird_1.0.apk`, `templerun2_1.2.1.apk`.
 
 ## Current state
+- **Aralon: Sword and Shadow HD (Unity 4.0.1 + Mono) — RELEASED 1.0.0 (2026-09-14)**, installed
+  fresh on the TouchPad and verified (clean env, fresh profile, no debug tracers):
+  `apkenv/packaging/out/com.apkenv.aralon_1.0.0_all.ipk` (291 MB, OBB bundled). Landscape, menus +
+  touch, New Game → world, SFX, dialogue, ambience and **music**. Three systemic host fixes, all
+  gated so Temple Run 2 is untouched: Unity 4's boot order (pre-init `nativeResize` + `nativeRender`),
+  an AndroidJavaObject bridge (ReflectionHelper → DisplayMetrics, or the GUI lays out at 0x0), and
+  `APKENV_PTHREAD_STACK_CLAMP` — FMOD asks for 8 KB thread stacks, glibc rejects them, and that
+  silently killed every MP3 track. Outdoor lighting is slightly less warm than on a Mali tablet —
+  parked by the user. Trail: `plan/ARALON.md`; new tools: `APKENV_UNITY_ICALL_TRACE`,
+  `APKENV_GL_UPLOADCHECK`, and the Android reference-device method in `PORTING-PLAYBOOK.md`.
 - **Amazing Alex HD (Rovio ka3d) — ported in ONE PASS (2026-08-26)** via the playbook: booted, music,
   playable on the first device launch; `apkenv/packaging/out/com.apkenv.amazingalex_1.0.0_all.ipk`.
   Trail: `plan/AMAZING-ALEX.md`. Module: `apkenv/modules/angrybirds.c` (now in the webOS build).

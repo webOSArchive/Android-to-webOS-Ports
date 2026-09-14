@@ -366,6 +366,22 @@ webos_update()
     if (webos_snapshot_wanted(frame))
         webos_snapshot(frame);   /* before the swap: the back buffer still holds it */
 
+    /* APKENV_OPAQUE_PRESENT=1: present an opaque frame. The webOS compositor
+     * blends the GL layer by its alpha channel; Android's never does, so a game
+     * that leaves alpha < 1 in the framebuffer looks darker here (see
+     * apkenv_gles_opaque_alpha in compat/gles_wrappers.c). Opt-in per port. */
+    {
+        static int opaque = -1;
+        extern void apkenv_gles_opaque_alpha(void);
+        if (opaque < 0) {
+            const char *e = getenv("APKENV_OPAQUE_PRESENT");
+            opaque = (e != NULL && e[0] == '1');
+            if (opaque) fprintf(stderr, "[PRESENT] opaque present on (alpha forced to 1 before swap)\n");
+        }
+        if (opaque)
+            apkenv_gles_opaque_alpha();
+    }
+
     SDL_GL_SwapBuffers();
 }
 

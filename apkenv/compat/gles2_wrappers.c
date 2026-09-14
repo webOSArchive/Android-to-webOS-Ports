@@ -6,6 +6,7 @@
 
 #define IN_GLES2_WRAPPERS
 #include "gles2_wrappers.h"
+#include "gl_uploadcheck.h"
 #include "etc1.h"
 #include <stdlib.h>
 #include <string.h>
@@ -422,14 +423,25 @@ my_gles2_glBlendFuncSeparate(GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLen
 void
 my_gles2_glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage)
 {
+    int upcheck = apkenv_gl_uploadcheck_on();
     WRAPPERS_DEBUG_PRINTF("glBufferData()\n", target, size, data, usage);
+    if (upcheck) apkenv_gl_upload_pre((apkenv_geterr_t)functions.glGetError);
     functions.glBufferData(target, size, data, usage);
+    /* for buffers the census records target + usage in place of format + type */
+    if (upcheck)
+        apkenv_gl_upload_post((apkenv_geterr_t)functions.glGetError, "glBufferData(ES2)",
+                              target, 0, target, usage, 0, 0, (long)size);
 }
 void
 my_gles2_glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void *data)
 {
+    int upcheck = apkenv_gl_uploadcheck_on();
     WRAPPERS_DEBUG_PRINTF("glBufferSubData()\n", target, offset, size, data);
+    if (upcheck) apkenv_gl_upload_pre((apkenv_geterr_t)functions.glGetError);
     functions.glBufferSubData(target, offset, size, data);
+    if (upcheck)
+        apkenv_gl_upload_post((apkenv_geterr_t)functions.glGetError, "glBufferSubData(ES2)",
+                              target, 0, target, 0, 0, 0, (long)size);
 }
 GLenum
 my_gles2_glCheckFramebufferStatus(GLenum target)
@@ -568,17 +580,26 @@ my_gles2_glCompressedTexImage2D(GLenum target, GLint level, GLenum internalforma
 #ifndef GL_ETC1_RGB8_OES
 #define GL_ETC1_RGB8_OES 0x8D64
 #endif
+    int upcheck = apkenv_gl_uploadcheck_on();
+    if (upcheck) apkenv_gl_upload_pre((apkenv_geterr_t)functions.glGetError);
     if (internalformat == GL_ETC1_RGB8_OES && data != NULL && width > 0 && height > 0) {
         unsigned char *rgb = apkenv_etc1_decode(data, width, height);
         if (rgb != NULL) {
             functions.glTexImage2D(target, level, GL_RGB, width, height, border,
                                    GL_RGB, GL_UNSIGNED_BYTE, rgb);
             free(rgb);
+            if (upcheck)
+                apkenv_gl_upload_post((apkenv_geterr_t)functions.glGetError,
+                                      "glCompressedTexImage2D(ES2,ETC1->RGB)", target, level,
+                                      internalformat, 0, width, height, (long)imageSize);
             return;
         }
     }
     WRAPPERS_DEBUG_PRINTF("glCompressedTexImage2D()\n", target, level, internalformat, width, height, border, imageSize, data);
     functions.glCompressedTexImage2D(target, level, internalformat, width, height, border, imageSize, data);
+    if (upcheck)
+        apkenv_gl_upload_post((apkenv_geterr_t)functions.glGetError, "glCompressedTexImage2D(ES2)",
+                              target, level, internalformat, 0, width, height, (long)imageSize);
 }
 void
 my_gles2_glCompressedTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const void *data)
@@ -771,8 +792,15 @@ my_gles2_glGenBuffers(GLsizei n, GLuint *buffers)
 void
 my_gles2_glGenerateMipmap(GLenum target)
 {
+    int upcheck = apkenv_gl_uploadcheck_on();
     WRAPPERS_DEBUG_PRINTF("glGenerateMipmap()\n", target);
+    if (upcheck) apkenv_gl_upload_pre((apkenv_geterr_t)functions.glGetError);
     functions.glGenerateMipmap(target);
+    /* ES2-only name, so this wrapper - not the GLES1 one - is always the one
+     * reached; mipmapping an unsupported format leaves an incomplete texture */
+    if (upcheck)
+        apkenv_gl_upload_post((apkenv_geterr_t)functions.glGetError, "glGenerateMipmap(ES2)",
+                              target, 0, 0, 0, 0, 0, -1);
 }
 void
 my_gles2_glGenFramebuffers(GLsizei n, GLuint *framebuffers)
@@ -831,7 +859,12 @@ my_gles2_glGetBufferParameteriv(GLenum target, GLenum pname, GLint *params)
 GLenum
 my_gles2_glGetError()
 {
+    GLenum pending;
     WRAPPERS_DEBUG_PRINTF("glGetError()\n");
+    /* hand back anything the upload checker drained (see my_glGetError) */
+    pending = (GLenum)apkenv_gl_pending_error();
+    if (pending != GL_NO_ERROR)
+        return pending;
     return functions.glGetError();
 }
 void
@@ -1124,8 +1157,13 @@ my_gles2_glStencilOpSeparate(GLenum face, GLenum fail, GLenum zfail, GLenum zpas
 void
 my_gles2_glTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *pixels)
 {
+    int upcheck = apkenv_gl_uploadcheck_on();
     WRAPPERS_DEBUG_PRINTF("glTexImage2D()\n", target, level, internalformat, width, height, border, format, type, pixels);
+    if (upcheck) apkenv_gl_upload_pre((apkenv_geterr_t)functions.glGetError);
     functions.glTexImage2D(target, level, internalformat, width, height, border, format, type, pixels);
+    if (upcheck)
+        apkenv_gl_upload_post((apkenv_geterr_t)functions.glGetError, "glTexImage2D(ES2)",
+                              target, level, internalformat, type, width, height, -1);
 }
 void
 my_gles2_glTexParameterf(GLenum target, GLenum pname, GLfloat param)
@@ -1154,8 +1192,13 @@ my_gles2_glTexParameteriv(GLenum target, GLenum pname, const GLint *params)
 void
 my_gles2_glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void *pixels)
 {
+    int upcheck = apkenv_gl_uploadcheck_on();
     WRAPPERS_DEBUG_PRINTF("glTexSubImage2D()\n", target, level, xoffset, yoffset, width, height, format, type, pixels);
+    if (upcheck) apkenv_gl_upload_pre((apkenv_geterr_t)functions.glGetError);
     functions.glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels);
+    if (upcheck)
+        apkenv_gl_upload_post((apkenv_geterr_t)functions.glGetError, "glTexSubImage2D(ES2)",
+                              target, level, format, type, width, height, -1);
 }
 void
 my_gles2_glUniform1f(GLint location, GLfloat x)

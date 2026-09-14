@@ -13,7 +13,15 @@
 # what made the first bridged run die with
 #   linker.c:1383| ERROR: 0 cannot locate 'g_free'... failed to link libunity.so
 #
-# With no arguments, reads the committed list at ../plan/tr2-mono-imports.txt.
+# With no arguments, emits the UNION of every committed per-game list,
+# ../plan/*-mono-imports.txt. One binary hosts every Unity port, and each engine
+# build imports a slightly different set: Aralon's Unity 4 libunity needs
+# mono_string_new_len and mono_object_get_virtual_method, which TR2's never
+# did - with only TR2's list, Aralon died at
+#   linker.c:1383| ERROR: 0 cannot locate 'mono_string_new_len'...
+# Extra names are harmless (a hook nobody imports is never bound). Regenerate a
+# game's list with:  comm -12 <(libunity UND) <(host libmono DEF)
+# and after regenerating, rebuild apkenv.o: build-webos.sh does not track headers.
 set -e
 cd "$(dirname "$0")/.."
 NM=/opt/PalmPDK/arm-gcc/bin/arm-none-linux-gnueabi-nm
@@ -26,8 +34,8 @@ elif [ -n "$1" ]; then
     echo "usage: $0 <libunity.so> <libmono.so>   (both, or neither)" >&2
     exit 2
 else
-    SRC="plan/tr2-mono-imports.txt (committed)"
-    SYMS=$(sort -u ../plan/tr2-mono-imports.txt)
+    SRC="union of $(cd .. && ls plan/*-mono-imports.txt | tr '\n' ' ')(committed)"
+    SYMS=$(cat ../plan/*-mono-imports.txt | sort -u)
 fi
 N=$(echo "$SYMS" | wc -l)
 cat <<EOF

@@ -46,6 +46,7 @@ int apkenv_fbo_es2_rotation(void);   /* compat/fbo_es2.c */
 GLuint apkenv_fbo_es2_ensure(void);
 #include "../compat/hooks.h"
 #include <errno.h>
+#include <sys/stat.h>
 #include <sys/mman.h>
 #include <limits.h>
 extern void apkenv_gl_probe_frame(unsigned long frame);
@@ -106,7 +107,13 @@ static void *un_hook_watch(void *arg)
 static const char *un_home = "";
 /* Cached from init() so the JNI handlers can answer getDisplaySize(). */
 static int un_screen_w = 0, un_screen_h = 0;
+/* What getPackageName() answers. The real host returns the game's own package;
+ * APKENV_UNITY_PACKAGE supplies it (Temple Run 2 shipped with the default). */
 static const char *un_pkg = "com.unity3d.player";
+/* Unity 4 and Unity 3.5 hosts differ in their first-frame order (see
+ * un_first_frame_tail). Detected from the engine's own native table, not from a
+ * version string: nativeSetInputCanceled(Z) exists only in the Unity 4 host. */
+static int un_unity4 = 0;
 
 
 static struct GlobalState* global;
@@ -133,8 +140,8 @@ jobject unity_jnienv_CallObjectMethod(JNIEnv* env, jobject p1, jmethodID p2, ...
 jobject unity_jnienv_CallObjectMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3) SOFTFP;
 jobject unity_jnienv_CallStaticObjectMethod(JNIEnv* env, jclass p1, jmethodID p2, ...) SOFTFP;
 jobject unity_jnienv_CallStaticObjectMethodV(JNIEnv* env, jclass p1, jmethodID p2, va_list p3) SOFTFP;
-static jobject unity_call_static_object(JNIEnv *env, jclass p1, jmethodID p2) SOFTFP;
-static jobject unity_call_object(JNIEnv *env, jmethodID method, va_list *ap) SOFTFP;
+static jobject unity_call_static_object(JNIEnv *env, jclass p1, jmethodID p2, va_list *ap) SOFTFP;
+static jobject unity_call_object(JNIEnv *env, jobject obj, jmethodID method, va_list *ap) SOFTFP;
 const char * unity_jnienv_GetStringUTFChars(JNIEnv *env, jstring string, jboolean *isCopy) SOFTFP;
 
 
@@ -368,6 +375,106 @@ un_jstr(JNIEnv *env, void *arg)
     return js->data;
 }
 
+/* ---- Unity 4: AndroidJavaObject bridge ------------------------------------
+ * Managed AndroidJavaObject/AndroidJavaClass resolve every member through the
+ * Java host's com.unity3d.player.ReflectionHelper (getMethodID / getFieldID /
+ * getConstructorID -> java.lang.reflect.*), then JNI FromReflectedMethod/Field,
+ * and call through the jvalue[] ("A") entry points. With none of that answered,
+ * every AndroidJavaObject call logs "Unable to find method id" and yields 0 or
+ * NULL - harmless for Temple Run 2's analytics plugins, fatal for Aralon's UI:
+ * its DisplayMetricsAndroid reads the screen size this way and GuiMgr sizes
+ * the entire GUI from it (0x0 -> no menu drawn, no touch ever hits).
+ *
+ * We answer with small made-up objects, not a Java VM: a reflected member
+ * carries (class, name, sig) straight into the jmethodID/jfieldID that the
+ * rest of the fake JNI already dispatches on by name, and an object carries its
+ * class so GetObjectClass and getClass().getName() - which Unity uses to build
+ * call signatures - tell the truth. Gated on the Unity 4 host so the shipped
+ * Temple Run 2 path keeps its exact behaviour until it gets a regression run. */
+#define UN_REFL_MAGIC 0x55524631u
+#define UN_OBJ_MAGIC  0x554f424au
+
+/* Both begin like dummy_jobject {clazz, field}, so unity_jnienv_GetObjectClass
+ * works on them unchanged. */
+struct un_refl {
+    jclass clazz;
+    jfieldID field;
+    unsigned magic;
+    struct _jmethodID id;       /* what FromReflectedMethod/Field hand out */
+};
+struct un_obj {
+    jclass clazz;
+    jfieldID field;
+    unsigned magic;
+    const char *described;      /* java.lang.Class objects: the class described */
+};
+
+static int
+un_is(const void *p, unsigned magic)
+{
+    return p != NULL && ((const struct un_obj *)p)->magic == magic;
+}
+
+static const char *
+un_clsname(jclass c)
+{
+    return c != NULL ? ((struct dummy_jclass *)c)->name : "?";
+}
+
+static jclass
+un_class(const char *name)
+{
+    struct dummy_jclass *c = malloc(sizeof(*c));
+    c->name = strdup(name);
+    return c;
+}
+
+static jobject
+un_new_obj(const char *cls, const char *described)
+{
+    struct un_obj *o = calloc(1, sizeof(*o));
+    o->clazz = un_class(cls);
+    o->magic = UN_OBJ_MAGIC;
+    o->described = described ? strdup(described) : NULL;
+    return o;
+}
+
+/* One line per call, bounded: this is the Unity 4 contract being discovered as
+ * the game exercises it. */
+static void
+un_refl_log(const char *what, const char *cls, const char *name, const char *extra)
+{
+    static int n;
+    if (n < 120) {
+        n++;
+        fprintf(stderr, "[UN-REFL] %s %s.%s %s\n", what, cls ? cls : "?",
+                name ? name : "?", extra ? extra : "");
+    }
+}
+
+/* ReflectionHelper.getMethodID(Class, String name, String sig, boolean static)
+ *                 .getFieldID (Class, String name, String sig, boolean static)
+ *                 .getConstructorID(Class, String sig) */
+static jobject
+un_reflect(JNIEnv *env, jmethodID method, va_list *ap)
+{
+    int ctor = strcmp(method->name, "getConstructorID") == 0;
+    jclass cls = va_arg(*ap, jclass);
+    const char *name = ctor ? "<init>" : un_jstr(env, va_arg(*ap, void *));
+    const char *sig = un_jstr(env, va_arg(*ap, void *));
+    struct un_refl *r = calloc(1, sizeof(*r));
+
+    r->clazz = un_class(ctor ? "java/lang/reflect/Constructor" :
+                        strcmp(method->name, "getFieldID") == 0 ? "java/lang/reflect/Field" :
+                                                                 "java/lang/reflect/Method");
+    r->magic = UN_REFL_MAGIC;
+    r->id.clazz = cls;
+    r->id.name = strdup(name ? name : "?");
+    r->id.sig = strdup(sig ? sig : "");
+    un_refl_log(method->name, un_clsname(cls), r->id.name, r->id.sig);
+    return r;
+}
+
 /* Shared dispatch for the object-returning instance calls.
  *
  * BOTH the "..." and the va_list ("V") entry points must route here. Overriding
@@ -378,8 +485,35 @@ un_jstr(JNIEnv *env, void *arg)
  * SIGSEGV in strlen with no clue as to which host method was really wanted.
  * Returning NULL here instead is both honest and traceable. */
 static jobject
-unity_call_object(JNIEnv *env, jmethodID method, va_list *ap)
+unity_call_object(JNIEnv *env, jobject obj, jmethodID method, va_list *ap)
 {
+    /* Unity 4 AndroidJavaObject chains (see the bridge above):
+     *   currentActivity.getWindowManager().getDefaultDisplay().getMetrics(dm)
+     * and getClass().getName(), which Unity calls on every AndroidJavaObject
+     * argument to build the JNI signature it then looks up. */
+    if (un_unity4) {
+        if (strcmp(method->name,"getWindowManager")==0) {
+            un_refl_log("call", "Activity", method->name, "-> WindowManager");
+            return un_new_obj("android/view/WindowManager", NULL);
+        }
+        if (strcmp(method->name,"getDefaultDisplay")==0) {
+            un_refl_log("call", "WindowManager", method->name, "-> Display");
+            return un_new_obj("android/view/Display", NULL);
+        }
+        if (strcmp(method->name,"getClass")==0) {
+            const char *c = obj != NULL ? un_clsname(((dummy_jobject *)obj)->clazz) : "java/lang/Object";
+            return un_new_obj("java/lang/Class", c);
+        }
+        if (strcmp(method->name,"getName")==0 && un_is(obj, UN_OBJ_MAGIC) &&
+            ((struct un_obj *)obj)->described != NULL) {
+            char dotted[256], *p;
+            snprintf(dotted, sizeof(dotted), "%s", ((struct un_obj *)obj)->described);
+            for (p = dotted; *p; p++) if (*p == '/') *p = '.';
+            un_refl_log("call", "Class", "getName", dotted);
+            return (*env)->NewStringUTF(env, dotted);
+        }
+    }
+
     /* PlayerPrefs.GetString(key, default) */
     if (ap != NULL && strcmp(method->name,"GetString")==0) {
         const char *key = un_jstr(env, va_arg(*ap, void *));
@@ -426,7 +560,7 @@ jobject unity_jnienv_CallObjectMethod(JNIEnv* env, jobject p1, jmethodID p2, ...
     va_list ap;
     MODULE_DEBUG_PRINTF("CallObjectMethod %x %x\n",p1,p2);
     va_start(ap, p2);
-    r = unity_call_object(env, p2, &ap);
+    r = unity_call_object(env, p1, p2, &ap);
     va_end(ap);
     return r;
 }
@@ -434,16 +568,22 @@ jobject unity_jnienv_CallObjectMethod(JNIEnv* env, jobject p1, jmethodID p2, ...
 jobject unity_jnienv_CallObjectMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
 {
     MODULE_DEBUG_PRINTF("CallObjectMethodV %s/%s\n", p2->name, p2->sig ? p2->sig : "");
-    return unity_call_object(env, p2, &p3);
+    return unity_call_object(env, p1, p2, &p3);
 }
 
 jobject
-unity_call_static_object(JNIEnv *env, jclass p1, jmethodID p2)
+unity_call_static_object(JNIEnv *env, jclass p1, jmethodID p2, va_list *ap)
 {
     struct dummy_jclass* clazz = p1;
     jmethodID method = p2;
 
     MODULE_DEBUG_PRINTF("unity_call_static_object(%s,%s)\n",clazz->name,method->name);
+
+    /* com.unity3d.player.ReflectionHelper - see the AndroidJavaObject bridge. */
+    if (un_unity4 && ap != NULL &&
+        (strcmp(method->name,"getMethodID")==0 || strcmp(method->name,"getFieldID")==0 ||
+         strcmp(method->name,"getConstructorID")==0))
+        return un_reflect(env, method, ap);
 
     if (strcmp(method->name,"getProperty")==0) {
         //jstring property = va_arg(p3,jstring);
@@ -464,13 +604,18 @@ unity_call_static_object(JNIEnv *env, jclass p1, jmethodID p2)
 jobject
 unity_jnienv_CallStaticObjectMethod(JNIEnv* env, jclass p1, jmethodID p2, ...)
 {
-    return unity_call_static_object(env, p1, p2);
+    jobject r;
+    va_list ap;
+    va_start(ap, p2);
+    r = unity_call_static_object(env, p1, p2, &ap);
+    va_end(ap);
+    return r;
 }
 
 jobject
 unity_jnienv_CallStaticObjectMethodV(JNIEnv* env, jclass p1, jmethodID p2, va_list p3)
 {
-    return unity_call_static_object(env, p1, p2);
+    return unity_call_static_object(env, p1, p2, &p3);
 }
 
 static void
@@ -505,6 +650,12 @@ unity_jnienv_CallVoidMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
         un_prefs_save();
         return;
     }
+    /* Display.getMetrics(DisplayMetrics): the fields are answered when read
+     * (unity_jnienv_GetIntField/GetFloatField), so there is nothing to fill. */
+    if (un_unity4 && strcmp(p2->name,"getMetrics")==0) {
+        un_refl_log("call", "Display", "getMetrics", "(fields answered on read)");
+        return;
+    }
     /* UnityPlayer.setOrientation() only forwards to Android's
      * Activity.setRequestedOrientation() - a windowing request with no return
      * value the engine consumes, so a no-op is correct here (apkenv owns the
@@ -527,7 +678,11 @@ unity_jnienv_CallVoidMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
      * Named here so they stop showing up as unanswered contract gaps. */
     if (strcmp(p2->name,"startActivityIndicator")==0 ||
         strcmp(p2->name,"stopActivityIndicator")==0 ||
-        strcmp(p2->name,"setWakeLock")==0)
+        strcmp(p2->name,"setWakeLock")==0 ||
+        /* Unity 4 additions: gyro drift compensation, and the soft-keyboard
+         * text push (only reachable once a soft keyboard is shown). */
+        strcmp(p2->name,"enableSensorCompensation")==0 ||
+        strcmp(p2->name,"setSoftInputStr")==0)
         return;
 
     un_trace_unhandled("void", p2);
@@ -565,6 +720,11 @@ unity_jnienv_CallIntMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
     /* Bytes of RAM Unity may assume it can use. The device has ~940 MB total;
      * report a conservative 256 MB so Unity picks modest texture/heap budgets. */
     if (strcmp(p2->name,"getTotalMemory")==0) return 256 * 1024 * 1024;
+    /* Unity 4: Display.getRotation() in degrees. We hand the engine a surface
+     * that is already the right way up (landscape native, or rotated at present
+     * time for portrait), so it is 0 either way. No cameras on this path. */
+    if (strcmp(p2->name,"getScreenOrientationAngle")==0) return 0;
+    if (strcmp(p2->name,"getCameraOrientation")==0) return 0;
 
     if (strcmp(p2->name,"GetInt")==0) {          /* PlayerPrefs.GetInt(key, def) */
         const char *key = un_jstr(env, va_arg(p3, void *));
@@ -610,6 +770,10 @@ unity_jnienv_CallBooleanMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p
         const char *key = un_jstr(env, va_arg(p3, void *));
         return un_pref_find(key) != NULL;
     }
+    /* Unity 4 capability queries: no vibrator is driven, no gyro compensation. */
+    if (strcmp(p2->name,"vibrationSupported")==0 ||
+        strcmp(p2->name,"isSensorCompensationEnabled")==0)
+        return 0;
 
     un_trace_unhandled("bool", p2);
     return 0;
@@ -644,8 +808,120 @@ unity_jnienv_NewGlobalRef(JNIEnv* p0, jobject p1)
         MODULE_DEBUG_PRINTF("unity_jnienv_NewGlobalRef(%x) -> %x\n", p1, obj);
         return obj;
     }
-    //dummy_jobject
+    /* A global ref to one of our objects IS the object: nothing moves or is
+     * collected. Returning NULL is what made every Unity 4 AndroidJavaObject log
+     * "Init'd AndroidJavaObject with null ptr!". 3.5 behaviour unchanged. */
+    return un_unity4 ? p1 : NULL;
+}
+
+/* ---- Unity 4 AndroidJavaObject bridge: the JNI entry points ---------------
+ * Each falls back to exactly what jni/jnienv.c answered before when the host
+ * is not Unity 4, so Temple Run 2 sees no change. */
+static jmethodID
+unity_jnienv_FromReflectedMethod(JNIEnv *env, jobject m)
+{
+    if (un_unity4 && un_is(m, UN_REFL_MAGIC))
+        return &((struct un_refl *)m)->id;
+    if (un_unity4) un_refl_log("FromReflectedMethod", "?", "(foreign object)", "-> NULL");
     return NULL;
+}
+
+static jfieldID
+unity_jnienv_FromReflectedField(JNIEnv *env, jobject f)
+{
+    if (un_unity4 && un_is(f, UN_REFL_MAGIC))
+        return (jfieldID)&((struct un_refl *)f)->id;
+    if (un_unity4) un_refl_log("FromReflectedField", "?", "(foreign object)", "-> NULL");
+    return NULL;
+}
+
+/* Constructors arrive through getConstructorID -> FromReflectedMethod. */
+static jobject
+un_construct(jclass cls, jmethodID m)
+{
+    const char *c = cls != NULL ? un_clsname(cls) : (m != NULL ? un_clsname(m->clazz) : "?");
+    un_refl_log("new", c, "<init>", (m != NULL && m->sig != NULL) ? m->sig : "");
+    return un_new_obj(c, NULL);
+}
+
+static jobject
+unity_jnienv_NewObjectA(JNIEnv *env, jclass cls, jmethodID m, jvalue *args)
+{
+    return un_unity4 ? un_construct(cls, m) : NULL;           /* jnienv.c: NULL */
+}
+
+static jobject
+unity_jnienv_NewObjectV(JNIEnv *env, jclass cls, jmethodID m, va_list args)
+{
+    return un_unity4 ? un_construct(cls, m) : GLOBAL_J(env);  /* jnienv.c: sentinel */
+}
+
+/* jvalue[] forms dispatch on the method name exactly like the va_list forms.
+ * The only handlers that read arguments (PlayerPrefs) never arrive this way. */
+static jobject
+unity_jnienv_CallObjectMethodA(JNIEnv *env, jobject obj, jmethodID m, jvalue *args)
+{
+    if (!un_unity4)
+        return NULL;                                           /* jnienv.c: NULL */
+    return unity_call_object(env, obj, m, NULL);
+}
+
+static void
+unity_jnienv_CallVoidMethodA(JNIEnv *env, jobject obj, jmethodID m, jvalue *args)
+{
+    if (!un_unity4)
+        return;
+    if (strcmp(m->name, "getMetrics") == 0) {
+        un_refl_log("call", "Display", "getMetrics", "(fields answered on read)");
+        return;
+    }
+    un_trace_unhandled("voidA", m);
+}
+
+/* android.util.DisplayMetrics for this device: the surface the engine was
+ * given (un_screen_w/h), the panel's physical 132 dpi, and the mdpi density
+ * bucket (1.0 / 160) that Android assigns a 132-dpi screen. GuiMgr:configure
+ * lays out from width/height; GuiMgr:useLargeScreen divides widthPixels by
+ * xdpi (1024 / 132 = 7.8 inches). */
+static jint
+unity_jnienv_GetIntField(JNIEnv *env, jobject obj, jfieldID f)
+{
+    const char *n = f != NULL ? ((struct _jmethodID *)f)->name : NULL;
+    jint v;
+    char s[32];
+
+    if (!un_unity4 || n == NULL)
+        return 0;
+    if      (strcmp(n, "widthPixels") == 0)  v = un_screen_w;
+    else if (strcmp(n, "heightPixels") == 0) v = un_screen_h;
+    else if (strcmp(n, "densityDpi") == 0)   v = 160;
+    else {
+        un_refl_log("GetIntField", "?", n, "-> 0 (unanswered)");
+        return 0;
+    }
+    snprintf(s, sizeof(s), "-> %d", (int)v);
+    un_refl_log("GetIntField", "DisplayMetrics", n, s);
+    return v;
+}
+
+static jfloat
+unity_jnienv_GetFloatField(JNIEnv *env, jobject obj, jfieldID f)
+{
+    const char *n = f != NULL ? ((struct _jmethodID *)f)->name : NULL;
+    float v;
+    char s[32];
+
+    if (!un_unity4 || n == NULL)
+        return 0.0f;
+    if      (strcmp(n, "density") == 0 || strcmp(n, "scaledDensity") == 0) v = 1.0f;
+    else if (strcmp(n, "xdpi") == 0 || strcmp(n, "ydpi") == 0)              v = 132.0f;
+    else {
+        un_refl_log("GetFloatField", "?", n, "-> 0 (unanswered)");
+        return 0.0f;
+    }
+    snprintf(s, sizeof(s), "-> %.1f", v);
+    un_refl_log("GetFloatField", "DisplayMetrics", n, s);
+    return v;
 }
 
 
@@ -732,6 +1008,15 @@ unity_try_init(struct SupportModule *self)
     self->override_env.CallIntMethodV = unity_jnienv_CallIntMethodV;
     self->override_env.CallBooleanMethodV = unity_jnienv_CallBooleanMethodV;
     self->override_env.CallFloatMethodV = unity_jnienv_CallFloatMethodV;
+    /* Unity 4 AndroidJavaObject bridge (inert unless the host is Unity 4). */
+    self->override_env.FromReflectedMethod = unity_jnienv_FromReflectedMethod;
+    self->override_env.FromReflectedField = unity_jnienv_FromReflectedField;
+    self->override_env.NewObjectA = unity_jnienv_NewObjectA;
+    self->override_env.NewObjectV = unity_jnienv_NewObjectV;
+    self->override_env.CallObjectMethodA = unity_jnienv_CallObjectMethodA;
+    self->override_env.CallVoidMethodA = unity_jnienv_CallVoidMethodA;
+    self->override_env.GetIntField = unity_jnienv_GetIntField;
+    self->override_env.GetFloatField = unity_jnienv_GetFloatField;
 
     return (self->priv->JNI_OnLoad_libunity!=NULL);
 }
@@ -917,9 +1202,37 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
     /* Java UnityPlayer order: <init>: nativeFile(apk); a(): initJni, PlayerPrefs, nativeInitWWW;
      * GL thread: nativeInit(w,h); first onDrawFrame: unityAndroidInit("assets/bin/", dataDir/lib),
      * unityAndroidPrepareGameLoop; then nativeRender() per frame. */
+    un_unity4 = (jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeSetInputCanceled") != NULL);
+    fprintf(stderr, "[UN] unity4 host: %s\n", un_unity4 ? "yes" : "no (3.5 order)");
+    {
+        const char *pkg = getenv("APKENV_UNITY_PACKAGE");
+        if (pkg != NULL && pkg[0] != '\0') un_pkg = pkg;
+        fprintf(stderr, "[UN] package name: %s\n", un_pkg);
+    }
+
     jstring file = GLOBAL_M->env->NewStringUTF(ENV_M,global->apk_filename);
     un_hookcheck("nativeFile"); fprintf(stderr, "[UN] nativeFile(%s)\n", global->apk_filename);
     self->priv->nativeFile(ENV_M,GLOBAL_M,file);
+    /* Split-binary games (settings.xml useObb=True) keep assets/bin/Data in an
+     * expansion file. The Unity 4 host's constructor follows nativeFile(apk)
+     * with l(), which calls nativeFile() once more for each OBB it finds under
+     * <sdcard>/Android/obb/<pkg>/. We are the host: APKENV_UNITY_OBB names the
+     * file (run-dir relative in a package), made absolute because the engine
+     * opens it long after startup. */
+    {
+        const char *obb = getenv("APKENV_UNITY_OBB");
+        if (obb != NULL && obb[0] != '\0') {
+            char abs[PATH_MAX];
+            struct stat st;
+            if (realpath(obb, abs) != NULL && stat(abs, &st) == 0) {
+                fprintf(stderr, "[UN] nativeFile(obb %s, %lld bytes)\n", abs, (long long)st.st_size);
+                self->priv->nativeFile(ENV_M, GLOBAL_M, GLOBAL_M->env->NewStringUTF(ENV_M, abs));
+            } else {
+                fprintf(stderr, "[UN] WARNING: APKENV_UNITY_OBB=%s not found (%s) - the engine "
+                                "will miss every asset in the expansion file\n", obb, strerror(errno));
+            }
+        }
+    }
     if (self->priv->initJni) { un_hookcheck("initJni"); fprintf(stderr, "[UN] initJni\n"); self->priv->initJni(ENV_M,GLOBAL_M); }
     if (self->priv->InitPlayerPrefs) { un_hookcheck("InitPlayerPrefs"); fprintf(stderr, "[UN] InitPlayerPrefs\n"); self->priv->InitPlayerPrefs(ENV_M,GLOBAL_M); }
     /* Swap to the portrait surface the engine will believe in. Everything
@@ -968,6 +1281,27 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
         fprintf(stderr, "[UN] nativeRecreateGfxState NOT FOUND\n");
     }
 
+    /* Unity 4: GLSurfaceView runs onSurfaceChanged -> nativeResize(w, h, viewW,
+     * viewH) and then the first onDrawFrame, which calls nativeRender() BEFORE
+     * the host's one-time i() (unityAndroidInit -> nativeResize ->
+     * unityAndroidPrepareGameLoop). That early resize is more than a size:
+     * while the engine is not yet initialised, nativeResize (libunity+0x37a75c)
+     * tail-calls +0x37378c, which lazily builds the loading-screen blitter
+     * (glGenTextures + a shader; pointer at +0x78883c). Once initialised it only
+     * updates scale factors. unityAndroidPrepareGameLoop's one-time setup
+     * (+0x37a7ec) dereferences that pointer without a check, so without this
+     * resize it is NULL -> SIGSEGV at +0x37a914 (Aralon run A2). Offsets are
+     * Aralon's build and only document the path; nothing here depends on them. */
+    if (un_unity4 && self->priv->nativeResize) {
+        fprintf(stderr, "[UN] nativeResize(%d,%d,%d,%d) [unity4: onSurfaceChanged, pre-init]\n",
+                width, height, width, height);
+        self->priv->nativeResize(ENV_M,GLOBAL_M,width,height,width,height);
+        if (self->priv->nativeRender) {
+            jboolean r = self->priv->nativeRender(ENV_M,GLOBAL_M);
+            fprintf(stderr, "[UN] nativeRender (pre-init, head of first onDrawFrame) -> %d\n", (int)r);
+        }
+    }
+
     /* Portrait: take the offscreen FBO now - AFTER the graphics device exists
      * (nativeInit + nativeRecreateGfxState) and BEFORE unityAndroidInit.
      * Creating it before the device produced GL_OUT_OF_MEMORY and a flat-colour
@@ -998,27 +1332,36 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
     un_main_tid = (pid_t)syscall(SYS_gettid);
     { pthread_t wt; pthread_create(&wt, NULL, un_hook_watch, NULL); }
     un_hookcheck("unityAndroidInitassets"); fprintf(stderr, "[UN] unityAndroidInit(assets/bin/, %s)\n", libdir);
-    self->priv->unityAndroidInit(ENV_M,GLOBAL_M,bin,lib);
-    fprintf(stderr, "[UN] unityAndroidInit done\n");
+    {
+        /* (Z) in the Unity 4 host, (V) in 3.5 - where r0 is whatever was left. */
+        jboolean ok = self->priv->unityAndroidInit(ENV_M,GLOBAL_M,bin,lib);
+        if (un_unity4) fprintf(stderr, "[UN] unityAndroidInit done -> %d\n", (int)ok);
+        else           fprintf(stderr, "[UN] unityAndroidInit done\n");
+    }
+    /* UnityPlayer.onDrawFrame()'s first-time tail, in the Java host's exact
+     * order (read from each host's UnityPlayer.smali):
+     *   3.5 (TR2):   unityAndroidInit -> unityAndroidPrepareGameLoop -> nativeResize
+     *   4.0 (i()):   unityAndroidInit -> nativeResize -> unityAndroidPrepareGameLoop
+     *   both then:   nativeResume() -> windowFocusChanged(true)
+     * Skipping resize/resume leaves the engine sized 0x0 AND paused: it clears
+     * to the camera background every frame and submits no geometry at all
+     * (measured on TR2: 0 glDrawArrays, glViewport never called). On 3.5 the
+     * resize must come AFTER prepareGameLoop - next to nativeInit is too early,
+     * the graphics device does not exist yet and the size is dropped. */
+    if (un_unity4 && self->priv->nativeResize) {
+        fprintf(stderr, "[UN] nativeResize(%d,%d,%d,%d) [unity4: before prepare]\n", width, height, width, height);
+        self->priv->nativeResize(ENV_M,GLOBAL_M,width,height,width,height);
+    }
     if (self->priv->unityAndroidPrepareGameLoop) {
         fprintf(stderr, "[UN] unityAndroidPrepareGameLoop\n");
         self->priv->unityAndroidPrepareGameLoop(ENV_M,GLOBAL_M);
         fprintf(stderr, "[UN] prepare done\n");
     }
-    /* UnityPlayer.onDrawFrame()'s first-time tail, in the Java host's exact
-     * order (read from UnityPlayer.smali):
-     *     unityAndroidInit -> unityAndroidPrepareGameLoop
-     *     -> nativeResize(w, h, w, h) -> nativeResume() -> windowFocusChanged(true)
-     * Skipping the middle two leaves the engine sized 0x0 AND paused: it clears
-     * to the camera background every frame and submits no geometry at all
-     * (measured: 0 glDrawArrays, glViewport never called). nativeResize must come
-     * AFTER prepareGameLoop - calling it next to nativeInit is too early, the
-     * graphics device does not exist yet and the size is dropped. */
-    if (self->priv->nativeResize) {
+    if (!self->priv->nativeResize) {
+        fprintf(stderr, "[UN] WARNING: nativeResize not found - expect a blank screen\n");
+    } else if (!un_unity4) {
         fprintf(stderr, "[UN] nativeResize(%d,%d,%d,%d)\n", width, height, width, height);
         self->priv->nativeResize(ENV_M,GLOBAL_M,width,height,width,height);
-    } else {
-        fprintf(stderr, "[UN] WARNING: nativeResize not found - expect a blank screen\n");
     }
     if (self->priv->nativeResume) {
         fprintf(stderr, "[UN] nativeResume\n");

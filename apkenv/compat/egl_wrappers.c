@@ -15,14 +15,17 @@ my_eglGetProcAddress(const char *procname)
     /* libunity imports eglGetProcAddress and almost nothing else from EGL, so
      * this is the engine's whole conversation with the GL loader - including
      * whatever it probes to decide which renderer to build. Log it. */
+    /* Bounded, both lines: Unity 4 re-asks for eglGetSystemTime(Frequency)NV on
+     * every frame when the answer is NULL - 680 unbounded "unimplemented" lines
+     * in Aralon's first seconds, burying the crash dump that mattered. */
     {
         static int n;
         if (n < 200) { n++;
             printf("[EGLPROC] %s -> %s\n", procname, sym ? "ok" : "NULL");
+            if (sym == NULL)
+                printf("eglGetProcAddress: unimplemented: %s\n", procname);
         }
     }
-    if (sym == NULL)
-        printf("eglGetProcAddress: unimplemented: %s\n", procname);
     return sym;
 }
 

@@ -158,7 +158,7 @@ refuses a same-or-lower version.
 
 ## Status
 
-Four games ship as one-tap `.ipk`s, each launching from the webOS launcher icon
+Five games ship as one-tap `.ipk`s, each launching from the webOS launcher icon
 with sound:
 
 | Game | Engine | State |
@@ -167,6 +167,7 @@ with sound:
 | **Plants vs. Zombies HD** | Marmalade/Airplay | ✅ playable, audio, centred letterbox |
 | **Amazing Alex HD** | Rovio ka3d | ✅ playable, audio — ported in ONE pass |
 | **Temple Run 2** | Unity 3.5 + Mono | ✅ playable — portrait, touch/swipe/tilt, 3D, SFX, music, splash |
+| **Aralon: Sword and Shadow HD** | Unity 4.0.1 + Mono | ✅ playable — menus, touch, open world, SFX, dialogue, music |
 | Where's My Water? 2 | same as WMW | ☐ reaches the level, stalls on multi-threaded GL loading |
 
 Capabilities the framework now has, all general rather than per-game:

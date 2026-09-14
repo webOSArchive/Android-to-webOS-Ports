@@ -12,38 +12,73 @@
  * report periodically. Streamed audio that is being serviced shows as a
  * steadily growing byte count; a stream that is opened and abandoned shows a
  * few KB and then a flat line. */
+/*
+ * APKENV_TRACE_SEEK_RANGE="0xLO-0xHI[,0xLO-0xHI...]" - up to 16 ranges, each
+ * accounted separately. One range was enough for Temple Run 2 (one music blob);
+ * Aralon keeps ~11 streamed tracks in separate .resS blobs across its OBB, and
+ * the question is which of them, if any, the engine ever reads. */
+#define ACCT_MAX_RANGES 16
 static long   acct_pos[64];
-static long   acct_range_bytes[64];
-static long   acct_lo = -1, acct_hi = -1;
+static long   acct_lo[ACCT_MAX_RANGES], acct_hi[ACCT_MAX_RANGES];
+static long   acct_bytes[ACCT_MAX_RANGES], acct_reported[ACCT_MAX_RANGES];
+static int    acct_nranges = -1;
 static void
 acct_init(void)
 {
-    if (acct_lo >= 0) return;
-    const char *e = getenv("APKENV_TRACE_SEEK_RANGE");
-    acct_lo = acct_hi = 0;
-    if (e != NULL) sscanf(e, "%li-%li", &acct_lo, &acct_hi);
+    const char *e;
+    if (acct_nranges >= 0) return;
+    acct_nranges = 0;
+    e = getenv("APKENV_TRACE_SEEK_RANGE");
+    while (e != NULL && *e != '\0' && acct_nranges < ACCT_MAX_RANGES) {
+        char *end;
+        long lo = strtol(e, &end, 0), hi;
+        if (end == e || *end != '-') break;
+        hi = strtol(end + 1, &end, 0);
+        if (hi > lo) {
+            acct_lo[acct_nranges] = lo;
+            acct_hi[acct_nranges] = hi;
+            acct_nranges++;
+        }
+        if (*end != ',') break;
+        e = end + 1;
+    }
+    if (acct_nranges > 0)
+        fprintf(stderr, "[READ] watching %d range(s)\n", acct_nranges);
+}
+static int
+acct_range_of(long pos)
+{
+    int k;
+    for (k = 0; k < acct_nranges; k++)
+        if (pos >= acct_lo[k] && pos <= acct_hi[k]) return k;
+    return -1;
 }
 static void
 acct_seek(int fd, long pos)
 {
     if (fd >= 0 && fd < 64) acct_pos[fd] = pos;
 }
+/* The first read into a range is reported at once (with where it landed), then
+ * every further 64 KB: a serviced stream is a steadily climbing count, an
+ * abandoned one is a single line. */
 static void
 acct_read(int fd, long n)
 {
-    static long last_report;
     static int reports;
-    long total = 0; int i;
+    int k;
     acct_init();
-    if (acct_hi <= 0 || fd < 0 || fd >= 64 || n <= 0) return;
-    if (acct_pos[fd] >= acct_lo && acct_pos[fd] <= acct_hi)
-        acct_range_bytes[fd] += n;
-    acct_pos[fd] += n;
-    for (i = 0; i < 64; i++) total += acct_range_bytes[i];
-    if (total - last_report >= 65536 && reports < 200) {
-        fprintf(stderr, "[READ] bytes read inside watched range so far: %ld\n", total);
-        last_report = total; reports++;
+    if (acct_nranges <= 0 || fd < 0 || fd >= 64 || n <= 0) return;
+    k = acct_range_of(acct_pos[fd]);
+    if (k >= 0) {
+        acct_bytes[k] += n;
+        if ((acct_reported[k] == 0 || acct_bytes[k] - acct_reported[k] >= 65536) && reports < 300) {
+            fprintf(stderr, "[READ] range #%d (0x%lx-0x%lx): %ld bytes so far (fd %d, at +0x%lx)\n",
+                    k, acct_lo[k], acct_hi[k], acct_bytes[k], fd, acct_pos[fd] - acct_lo[k]);
+            acct_reported[k] = acct_bytes[k];
+            reports++;
+        }
     }
+    acct_pos[fd] += n;
 }
 
 
@@ -274,12 +309,54 @@ my_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
     return r;
 }
 
+/* webOS's kernel has no /sys/devices/system/cpu/{present,possible,online};
+ * every Android kernel does, and Unity (and the NDK cpufeatures code FMOD
+ * builds on) read it for the core count. When the fopen fails they assume ONE
+ * CPU: Aralon on the TouchPad runs 0 UnityWorker threads where a real tablet
+ * runs 3, and never creates the "FMOD file thread" a real tablet has while its
+ * music plays. Answer the way an Android kernel would, from the real core
+ * count. Opt-in (APKENV_SYS_CPU=1) until the shipped ports get a regression
+ * run - Temple Run 2 has only ever seen the failure. */
+static const char *
+sys_cpu_redirect(const char *path)
+{
+    static const char answer[] = "/media/internal/.apkenv/.sys-cpu-present";
+    static int state = -1;          /* -1 not decided, 0 off, 1 answer ready */
+    const char *leaf;
+
+    if (path == NULL || strncmp(path, "/sys/devices/system/cpu/", 24) != 0)
+        return NULL;
+    leaf = path + 24;
+    if (strcmp(leaf, "present") != 0 && strcmp(leaf, "possible") != 0 && strcmp(leaf, "online") != 0)
+        return NULL;
+    if (state < 0) {
+        const char *e = getenv("APKENV_SYS_CPU");
+        state = 0;
+        if (e != NULL && e[0] == '1') {
+            long n = sysconf(_SC_NPROCESSORS_CONF);
+            FILE *f = fopen(answer, "w");
+            if (n < 1) n = 1;
+            if (f != NULL) {
+                if (n > 1) fprintf(f, "0-%ld\n", n - 1);
+                else       fprintf(f, "0\n");
+                fclose(f);
+                state = 1;
+                fprintf(stderr, "[SYSCPU] /sys/devices/system/cpu/{present,possible,online} -> %ld CPU(s)\n", n);
+            } else {
+                fprintf(stderr, "[SYSCPU] cannot write %s: %s\n", answer, strerror(errno));
+            }
+        }
+    }
+    return state == 1 ? answer : NULL;
+}
+
 FILE *
 
 my_fopen(__const char *__restrict __filename, __const char *__restrict __modes)
 {
     WRAPPERS_DEBUG_PRINTF("fopen(%s, %s)\n", __filename, __modes);
-    FILE  *f = fopen(__filename,__modes);
+    const char *cpu = sys_cpu_redirect(__filename);
+    FILE  *f = fopen(cpu != NULL ? cpu : __filename, __modes);
     if (f == NULL && __modes && strchr(__modes, 'r')) {
         char buf[4096];
         const char *alt = asset_root_path(__filename, buf, sizeof(buf));
@@ -384,17 +461,14 @@ void apkenv_stackscan(const char *what);
 static int
 trace_seek_range(long off)
 {
-    static long lo = -1, hi = -1;
     static int n;
-    if (lo < 0) {
-        const char *e = getenv("APKENV_TRACE_SEEK_RANGE");
-        lo = hi = 0;
-        if (e != NULL) sscanf(e, "%li-%li", &lo, &hi);
-    }
-    if (hi <= 0 || off < lo || off > hi)
+    int k;
+    acct_init();                  /* shares the range list with the read accounting */
+    k = acct_range_of(off);
+    if (k < 0)
         return 0;
     if (n++ < 40)
-        fprintf(stderr, "[SEEK] into watched range: 0x%lx\n", off);
+        fprintf(stderr, "[SEEK] into watched range #%d: 0x%lx (+0x%lx)\n", k, off, off - acct_lo[k]);
     /* WHO seeks there: the engine's call chain for the first two hits. This is
      * the same stack-scan that located the renderer-select branch; it turns
      * "the file is read once and nothing follows" into concrete libunity
@@ -676,7 +750,8 @@ int
 my_open(__const char *__file, int __oflag, ...)
 {
     WRAPPERS_DEBUG_PRINTF("open()\n", __file, __oflag);
-    int fd = open(__file, __oflag);
+    const char *cpu = sys_cpu_redirect(__file);   /* see my_fopen */
+    int fd = open(cpu != NULL ? cpu : __file, __oflag);
     if (fd < 0 && (__oflag & (O_WRONLY | O_RDWR)) == 0) {  /* read-only redirect */
         char buf[4096];
         const char *alt = asset_root_path(__file, buf, sizeof(buf));

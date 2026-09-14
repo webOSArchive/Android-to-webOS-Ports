@@ -1,0 +1,10 @@
+{
+    "id": "com.apkenv.aralon",
+    "version": "1.0.0",
+    "vendor": "apkenv",
+    "type": "pdk",
+    "main": "apkenv",
+    "title": "Aralon",
+    "icon": "icon.png",
+    "requiredMemory": 400
+}

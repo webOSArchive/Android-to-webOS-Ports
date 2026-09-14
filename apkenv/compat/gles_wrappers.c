@@ -4,6 +4,7 @@
 
 #define IN_GLES_WRAPPERS
 #include "gles_wrappers.h"
+#include "gl_uploadcheck.h"
 #include <assert.h>
 #include <stdlib.h>
 
@@ -903,14 +904,25 @@ my_glBlendFunc(GLenum sfactor, GLenum dfactor)
 void
 my_glBufferData(GLenum target, GLsizeiptr size, const GLvoid *data, GLenum usage)
 {
+    int upcheck = apkenv_gl_uploadcheck_on();
     WRAPPERS_DEBUG_PRINTF("glBufferData()\n", target, size, data, usage);
+    if (upcheck) apkenv_gl_upload_pre((apkenv_geterr_t)functions.glGetError);
     functions.glBufferData(target, size, data, usage);
+    /* for buffers the census records target + usage in place of format + type */
+    if (upcheck)
+        apkenv_gl_upload_post((apkenv_geterr_t)functions.glGetError, "glBufferData",
+                              target, 0, target, usage, 0, 0, (long)size);
 }
 void
 my_glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const GLvoid *data)
 {
+    int upcheck = apkenv_gl_uploadcheck_on();
     WRAPPERS_DEBUG_PRINTF("glBufferSubData()\n", target, offset, size, data);
+    if (upcheck) apkenv_gl_upload_pre((apkenv_geterr_t)functions.glGetError);
     functions.glBufferSubData(target, offset, size, data);
+    if (upcheck)
+        apkenv_gl_upload_post((apkenv_geterr_t)functions.glGetError, "glBufferSubData",
+                              target, 0, target, 0, 0, 0, (long)size);
 }
 void
 my_glClear(GLbitfield mask)
@@ -982,12 +994,18 @@ my_glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLs
 #ifndef GL_ETC1_RGB8_OES
 #define GL_ETC1_RGB8_OES 0x8D64
 #endif
+    int upcheck = apkenv_gl_uploadcheck_on();
+    if (upcheck) apkenv_gl_upload_pre((apkenv_geterr_t)functions.glGetError);
     if (internalformat == GL_ETC1_RGB8_OES && data != NULL && width > 0 && height > 0) {
         unsigned char *rgb = apkenv_etc1_decode(data, width, height);
         if (rgb != NULL) {
             functions.glTexImage2D(target, level, GL_RGB, width, height, border,
                                    GL_RGB, GL_UNSIGNED_BYTE, rgb);
             free(rgb);
+            if (upcheck)
+                apkenv_gl_upload_post((apkenv_geterr_t)functions.glGetError,
+                                      "glCompressedTexImage2D(ETC1->RGB)", target, level,
+                                      internalformat, 0, width, height, (long)imageSize);
             return;
         }
         /* Out of memory: fall through and let the driver reject it as before,
@@ -1013,6 +1031,9 @@ my_glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLs
 
     WRAPPERS_DEBUG_PRINTF("glCompressedTexImage2D()\n", target, level, internalformat, width, height, border, imageSize, data);
     functions.glCompressedTexImage2D(target, level, internalformat, width, height, border, imageSize, data);
+    if (upcheck)
+        apkenv_gl_upload_post((apkenv_geterr_t)functions.glGetError, "glCompressedTexImage2D",
+                              target, level, internalformat, 0, width, height, (long)imageSize);
 }
 void
 my_glCompressedTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const GLvoid *data)
@@ -1190,7 +1211,14 @@ my_glGenTextures(GLsizei n, GLuint *textures)
 GLenum
 my_glGetError()
 {
+    GLenum pending;
     WRAPPERS_DEBUG_PRINTF("glGetError()\n");
+    /* an error the upload checker (gl_uploadcheck.c) drained belongs to the
+     * engine: hand it back first, so the engine's view of GL errors is exactly
+     * what it would have been. Always 0 when the checker is off. */
+    pending = (GLenum)apkenv_gl_pending_error();
+    if (pending != GL_NO_ERROR)
+        return pending;
     return functions.glGetError();
 }
 void
@@ -1587,6 +1615,12 @@ my_glTexEnvxv(GLenum target, GLenum pname, const GLfixed *params)
 void
 my_glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *pixels)
 {
+    /* APKENV_GL_UPLOADCHECK (gl_uploadcheck.c): this GLES1 wrapper owns the
+     * shared name, so it is the one the engine reaches even on an ES2 context. */
+    int upcheck = apkenv_gl_uploadcheck_on();
+    if (upcheck)
+        apkenv_gl_upload_pre((apkenv_geterr_t)functions.glGetError);
+
     if (gp_enabled()) {
         static int n = 0;
         if (n < 8) { n++;
@@ -1653,6 +1687,10 @@ my_glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width,
 
         functions.glTexImage2D(target, level, internalformat, width, height, border, format, type, pixels);
     }
+    /* after every branch above, including the downscale ones */
+    if (upcheck)
+        apkenv_gl_upload_post((apkenv_geterr_t)functions.glGetError, "glTexImage2D", target, level,
+                              (unsigned)internalformat, type, width, height, -1);
 }
 void
 my_glTexParameteri(GLenum target, GLenum pname, GLint param)
@@ -1681,8 +1719,14 @@ my_glTexParameterxv(GLenum target, GLenum pname, const GLfixed *params)
 void
 my_glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels)
 {
+    int upcheck = apkenv_gl_uploadcheck_on();
     WRAPPERS_DEBUG_PRINTF("glTexSubImage2D()\n", target, level, xoffset, yoffset, width, height, format, type, pixels);
+    if (upcheck) apkenv_gl_upload_pre((apkenv_geterr_t)functions.glGetError);
     functions.glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels);
+    /* sub-images carry an external format only: log that plus the type */
+    if (upcheck)
+        apkenv_gl_upload_post((apkenv_geterr_t)functions.glGetError, "glTexSubImage2D",
+                              target, level, format, type, width, height, -1);
 }
 void
 my_glTranslatex(GLfixed x, GLfixed y, GLfixed z)
@@ -1734,6 +1778,29 @@ apkenv_gles_clear_screen(void)
     if (sc) functions.glDisable(GL_SCISSOR_TEST);
     functions.glClearColor(0, 0, 0, 1);
     functions.glClear(GL_COLOR_BUFFER_BIT);
+    functions.glClearColor(cc[0], cc[1], cc[2], cc[3]);
+    if (sc) functions.glEnable(GL_SCISSOR_TEST);
+}
+
+/* Make the frame opaque before it is presented: write alpha = 1 everywhere and
+ * leave the colour the game drew untouched. Android's compositor treats a game
+ * surface as opaque; webOS's blends our RGBA8888 GL layer by its alpha, so
+ * wherever a game leaves alpha < 1 in the framebuffer (Aralon's ground fades
+ * detail in through vertex-colour alpha) the screen shows it darkened, and
+ * non-premultiplied edges come out as coloured fringes. State is restored. */
+void
+apkenv_gles_opaque_alpha(void)
+{
+    GLfloat cc[4];
+    GLboolean cm[4];
+    GLboolean sc = functions.glIsEnabled(GL_SCISSOR_TEST);
+    functions.glGetFloatv(GL_COLOR_CLEAR_VALUE, cc);
+    functions.glGetBooleanv(GL_COLOR_WRITEMASK, cm);
+    if (sc) functions.glDisable(GL_SCISSOR_TEST);
+    functions.glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+    functions.glClearColor(0, 0, 0, 1);
+    functions.glClear(GL_COLOR_BUFFER_BIT);
+    functions.glColorMask(cm[0], cm[1], cm[2], cm[3]);
     functions.glClearColor(cc[0], cc[1], cc[2], cc[3]);
     if (sc) functions.glEnable(GL_SCISSOR_TEST);
 }

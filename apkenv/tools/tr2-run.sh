@@ -18,7 +18,7 @@
 #   - a wedged host daemon needs: sudo systemctl restart novacomd
 set -e
 cd "$(dirname "$0")/.."
-APPID=com.apkenv.templerun2
+APPID=${APPID:-com.apkenv.templerun2}   # e.g. APPID=com.apkenv.aralon for another Unity port
 LOGNAME="${1:-tr2-run}"
 WAIT="${WAIT:-30}"
 OUT=../plan/logs/$LOGNAME.log
@@ -35,8 +35,11 @@ if [ -n "$PID" ]; then
     nc_run /bin/sleep 5 >/dev/null
 fi
 
+# A big package (Aralon: 291 MB with its OBB) spends ~5 min in the USB copy and
+# several more while the device gunzips it at ~1 MB/s. A timeout that fires
+# mid-unpack would launch a half-installed app and pull a misleading log.
 echo "== installing"
-timeout 600 palm-install "$IPK" 2>&1 | tail -1
+timeout "${INSTALL_TIMEOUT:-1800}" palm-install "$IPK" 2>&1 | tail -1
 
 echo "== launching"
 timeout 120 palm-launch $APPID 2>&1 | tail -1
