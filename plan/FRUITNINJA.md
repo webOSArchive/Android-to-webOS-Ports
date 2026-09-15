@@ -279,15 +279,48 @@ later game showed `BEST: 6` from an earlier one.
 coordinate lands on a different item run to run. Fire a short burst of slices across the target
 rather than one exact swipe.*
 
+**A 38-minute real play session** (`plan/logs/fn-icon.log`, the operator's own hands) is the best
+evidence we have and it is good: **862 touch events** delivered, **2290 s of audio with
+`underrun +0`**, and 447 fps samples with a **median of 59.0** (min 37.2 — the loading window,
+max 60.0). Real finger touch, sustained audio and sustained frame rate are all confirmed. It ended
+in the one open bug below.
+
 Still open:
+
+0. **CRASH ON PAUSE — the one real defect, not yet diagnosed.** At the end of that session the
+   process took a SIGSEGV immediately after losing focus:
+   ```
+   [SDLEV] ACTIVEEVENT state=0x4 gain=0 (APPACTIVE=1 APPINPUTFOCUS=0 APPMOUSEFOCUS=0)
+   [SDLEV] -> module->pause (APPACTIVE lost), entering wait loop
+   signal 11 addr=(nil) pc=0x2c46540c   (libmortargame.so +0x4c140c)
+   ```
+   Seen once, in 38 minutes, and **not yet reproduced** — so treat the following as leads, not
+   findings. `+0x4c140c` sits inside `Mortar::BrickUI::UIDrawQueue` code, but `lr` in that dump is
+   `0x17c` (not a code address), so the reported PC is unreliable — the same signal handler already
+   misreported `pc == lr` on the fn-02 crash. Do not build a theory on it without better evidence.
+
+   What the module does on pause, against what the Java host does:
+
+   | `mortar_pause()` | `MortarGameActivity` |
+   |---|---|
+   | `native_onFocusLost` | `onWindowFocusChanged(false)`: `onFocusLost()` **then** `TouchInputHandler.onFocusLost()` (sets `hasFocus=false`, which makes `onTouchEvent` drop events) |
+   | `native_onPause` | `onPause()`: `SoundStateManager.onPause()`, **`mView.onPause()` — GLSurfaceView stops the render thread** — `super.onPause()`, then `NativeGameLib.onPause()` |
+   | `native_saveOnExit` | `saveOnExit()`, immediately after `onPause()` |
+
+   Two deviations worth testing first, in this order: (a) the host stops the **render thread before**
+   `native_onPause`, and apkenv calls `module->pause` from inside `input_update`, i.e. mid-frame
+   between input and `step()`; (b) all three natives fire back-to-back in one call here, where
+   Android delivers focus-loss and pause as separate callbacks, possibly a frame apart. Bisect with
+   an env knob over which of the three are called, and reproduce by launching another app from
+   novacom rather than waiting for a long session.
 
 1. **Multi-finger slicing.** The module maps a second finger to
    `ACTION_POINTER_DOWN | index<<8`, faithfully to `MultiTouchInputHandler`, but only single-finger
    input has been exercised.
 2. **Multiplayer** is same-device VS; the setup screen works, a match was not played.
-3. **Long-session behaviour.** The longest run was ~90 s. The engine allocates a new `HttpClient`
-   per ad-media request (~1/s) and the module frees it on `FinishedCopyingDataJNI`, but that has not
-   been watched over an hour.
+3. **Long-session behaviour** is now partly answered: 38 minutes with steady audio and frame rate,
+   ending in the pause crash above. The `HttpClient`-per-request churn (~1/s, freed on
+   `FinishedCopyingDataJNI`) caused no visible growth over that span.
 4. **Memory headroom.** 76 MB RSS / 268 MB VmSize at the menu, against `requiredMemory: 250` in
    `appinfo.json` and ~490 MB free on the device. Not measured deep into gameplay.
 

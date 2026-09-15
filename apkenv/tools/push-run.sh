@@ -15,6 +15,13 @@
 #     So: refuse to launch unless the md5 on the device matches this build.
 #   - run every device command under `timeout`; a hung novacom run wedges the
 #     host daemon (recover with: sudo systemctl restart novacomd).
+#   - `kill -9` leaves the app's PDK jail bind-mounts behind (webOS only tears
+#     them down on a clean exit). They accumulate across iterations — after ~15
+#     cycles the device had 22 of them and /media/internal had come unmounted,
+#     which makes palm-install fail with `file open failed` on
+#     /media/internal/.developer. Check `grep -c palm/jail /proc/mounts` and
+#     whether store-media is mounted before blaming the package; a reboot
+#     clears both.
 set -e
 cd "$(dirname "$0")/.."
 APPID=${APPID:?set APPID, e.g. APPID=com.apkenv.fruitninja}
