@@ -266,8 +266,13 @@ Memory: PvZ needs ~450 MB free; `requiredMemory` in `appinfo.json` makes webOS r
   apart.
   **(5)** `kill -9` (which every iteration script uses, because `killall` does not reliably take)
   **leaves the app's PDK jail bind-mounts behind** — webOS only tears them down on a clean exit.
-  They accumulate: after ~15 cycles the device had 22 of them and `/media/internal` had come
-  unmounted entirely (`store-media` present in `/dev/mapper`, absent from `/proc/mounts`). That
+  Note what the count means before reading anything into it: **one jailed app is ~23 bind mounts**
+  (`/media/internal`, `/usr/lib`, … all bind-mounted into `/var/palm/jail/<appid>/`), so 23 lines in
+  `/proc/mounts` is a single jail, not 23 leaks — check `sed 's|.*jail/||;s|/.*||' | sort -u` for the
+  app count. What was observed once: a jail left behind by an app that had since been *uninstalled*,
+  alongside `/media/internal` unmounted entirely (`store-media` present in `/dev/mapper`, absent from
+  `/proc/mounts`). Whether the stale jail caused that or merely accompanied it is **not
+  established**. That
   surfaces as `palm-install` failing with `novacom error ... file open failed` on
   `/media/internal/.developer`, which reads exactly like a corrupt package. Before blaming the
   `.ipk`: `grep -c palm/jail /proc/mounts` and check `df` for `/media/internal`. A reboot clears
