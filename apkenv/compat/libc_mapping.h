@@ -28,7 +28,7 @@
 {"fstatat", my_fstatat},
 
 // struct dirent is also incompatible
-{"opendir", opendir},
+{"opendir", my_opendir},
 {"fdopendir", fdopendir},
 {"readdir", my_readdir},
 {"readdir_r", my_readdir_r},

@@ -47,10 +47,18 @@ rm -f "$OUT/deadspace-stripped.apk"
 ( cd "$WORK" && zip -q -r -X "$OLDPWD/$OUT/deadspace-stripped.apk" \
       lib AndroidManifest.xml resources.arsc res )
 
-echo "== content tree (assets/published, read in place on the device)"
+# The engine composes an ABSOLUTE content path as
+#   <GetExternalStorageDirectory()>/Android/data/com.ea.deadspace/files/published/...
+# (observed on device, ds-07: stat of exactly that, failing). That middle part
+# is fixed in the binary, so the staged tree has to reproduce it - the module
+# answers GetExternalStorageDirectory() with <appdir>/android/extras and the
+# engine appends the rest. Note the package id in the path is com.ea.deadspace,
+# NOT the apk's com.eamobile.deadspace_full_azn.
+CONTENT_SUBDIR=Android/data/com.ea.deadspace/files
+echo "== content tree at $CONTENT_SUBDIR/published (read in place on the device)"
 rm -rf "$OUT/content"
-mkdir -p "$OUT/content"
-cp -r "$WORK/assets/published" "$OUT/content/published"
+mkdir -p "$OUT/content/$CONTENT_SUBDIR"
+cp -r "$WORK/assets/published" "$OUT/content/$CONTENT_SUBDIR/published"
 
 # The engine also reads a couple of small config files through Java's
 # AssetManager (EAMCore.ini and friends), not just the published/ tree it
@@ -63,9 +71,9 @@ echo "== staged $(ls "$OUT/content/assets" | wc -l) loose asset file(s): $(ls "$
 # Verify, loudly. A short content tree is a game that boots and then fails to
 # find a level, which is a much more expensive thing to debug on the device.
 SRC_N=$(find "$WORK/assets/published" -type f | wc -l)
-OUT_N=$(find "$OUT/content/published" -type f | wc -l)
+OUT_N=$(find "$OUT/content/$CONTENT_SUBDIR/published" -type f | wc -l)
 SRC_B=$(du -sb "$WORK/assets/published" | cut -f1)
-OUT_B=$(du -sb "$OUT/content/published" | cut -f1)
+OUT_B=$(du -sb "$OUT/content/$CONTENT_SUBDIR/published" | cut -f1)
 
 echo
 echo "stripped apk : $(du -h "$OUT/deadspace-stripped.apk" | cut -f1)"

@@ -753,6 +753,89 @@ eablast_init(struct SupportModule *self, int width, int height, const char *home
     }
 }
 
+/* ── APKENV_BLAST_AUTOTAP: synthesise input, for testing without a finger ──
+ * Entries separated by ';':
+ *     "x,y@frame"            tap: press at `frame`, release 6 frames later
+ *     "x1,y1>x2,y2@frame"    swipe: press, 8 interpolated moves, release
+ * Coordinates are screen pixels. Everything goes through eablast_input(), so it
+ * exercises the real contract (normalized 0..1, Android action codes) rather
+ * than a shortcut. Dead Space wants taps to advance its hint screens and swipes in play,
+ * so both forms carry over. Diagnostic: pair with
+ * tools/grab.sh, and never set this in a shipped env file. */
+#define BLAST_AUTOTAP_MAX 24
+#define BLAST_SWIPE_STEPS 8
+struct autotap_entry {
+    int x0, y0, x1, y1;
+    int is_swipe;
+    unsigned long frame;
+    int stage;                  /* 0 = pending, 1..n = in progress, -1 = done */
+};
+static struct autotap_entry autotap[BLAST_AUTOTAP_MAX];
+static int autotap_n = -1;
+
+static void
+blast_autotap_parse(void)
+{
+    const char *e = getenv("APKENV_BLAST_AUTOTAP");
+    autotap_n = 0;
+    if (e == NULL || e[0] == '\0') return;
+    while (*e && autotap_n < BLAST_AUTOTAP_MAX) {
+        struct autotap_entry *a = &autotap[autotap_n];
+        int x0, y0, x1, y1;
+        unsigned long f;
+        if (sscanf(e, "%d,%d>%d,%d@%lu", &x0, &y0, &x1, &y1, &f) == 5) {
+            a->x0 = x0; a->y0 = y0; a->x1 = x1; a->y1 = y1;
+            a->is_swipe = 1; a->frame = f; a->stage = 0;
+            fprintf(stderr, "[BLAST-AUTOTAP] queued swipe (%d,%d)->(%d,%d) at frame %lu\n",
+                    x0, y0, x1, y1, f);
+            autotap_n++;
+        } else if (sscanf(e, "%d,%d@%lu", &x0, &y0, &f) == 3) {
+            a->x0 = a->x1 = x0; a->y0 = a->y1 = y0;
+            a->is_swipe = 0; a->frame = f; a->stage = 0;
+            fprintf(stderr, "[BLAST-AUTOTAP] queued tap (%d,%d) at frame %lu\n", x0, y0, f);
+            autotap_n++;
+        }
+        e = strchr(e, ';');
+        if (e == NULL) break;
+        e++;
+    }
+}
+
+static void eablast_input(struct SupportModule *self, int event, int x, int y, int finger);
+
+static void
+blast_autotap_run(struct SupportModule *self)
+{
+    int i;
+    if (autotap_n < 0) blast_autotap_parse();
+    for (i = 0; i < autotap_n; i++) {
+        struct autotap_entry *a = &autotap[i];
+        int last = BLAST_SWIPE_STEPS + 1;   /* a tap is a swipe of zero length */
+        long step;
+        if (a->stage < 0) continue;
+        if (a->stage == 0) {
+            if (blast_frames != a->frame) continue;
+            fprintf(stderr, "[BLAST-AUTOTAP] down (%d,%d)\n", a->x0, a->y0);
+            eablast_input(self, ACTION_DOWN, a->x0, a->y0, 0);
+            a->stage = 1;
+            continue;
+        }
+        /* one event per frame after the press */
+        step = (long)(blast_frames - a->frame);
+        if (step != a->stage) continue;
+        if (a->stage < last) {
+            int x = a->x0 + (a->x1 - a->x0) * a->stage / BLAST_SWIPE_STEPS;
+            int y = a->y0 + (a->y1 - a->y0) * a->stage / BLAST_SWIPE_STEPS;
+            eablast_input(self, ACTION_MOVE, x, y, 0);
+            a->stage++;
+        } else {
+            fprintf(stderr, "[BLAST-AUTOTAP] up   (%d,%d)\n", a->x1, a->y1);
+            eablast_input(self, ACTION_UP, a->x1, a->y1, 0);
+            a->stage = -1;
+        }
+    }
+}
+
 static void
 eablast_input(struct SupportModule *self, int event, int x, int y, int finger)
 {
@@ -784,6 +867,8 @@ static void
 eablast_update(struct SupportModule *self)
 {
     struct SupportModulePriv *p = self->priv;
+
+    blast_autotap_run(self);
 
     blast_frames++;
     {

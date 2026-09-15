@@ -288,6 +288,7 @@ int my_vasprintf(char **strp, const char *fmt, va_list ap) SOFTFP;
 int my_vsprintf(char *str, const char *format, va_list ap) SOFTFP;
 
 int my_stat(const char *path, void *buf);
+DIR *my_opendir(const char *name);
 int my_fstat(int fd, void *buf);
 int my_lstat(const char *path, void *buf);
 int my_fstatat(int dirfd, const char *pathname, void *buf, int flags);

@@ -3,7 +3,7 @@
 Target: **`android-candidates/Dead-Space.apk`** — `com.eamobile.deadspace_full_azn` 1.2.0
 (versionCode 1200), the **Amazon Appstore** build, dated 2013-10-22. 296 MB.
 
-Status: **boots and renders frame 1; crashes on frame 2.** See §6 for the device trail.
+Status: **boots, renders, menus navigate, 3D intro scene runs.** See §6 for the device trail.
 Previously: **module written, package built, nothing run yet.** 2026-09-15 evening, following
 `PORTING-PLAYBOOK.md` §1–§2. Everything below is static analysis —
 `apkenv/modules/eablast.c` compiles and
@@ -257,7 +257,34 @@ One package install (174 MB), then binary-only pushes. **It boots.**
 | ds-05 | `APKENV_TRACE_FILES=1` | **The engine opens no content file at all** — only `/proc/cpuinfo`. Probe verified to cover both `fopen` and `open`, and failures are logged unconditionally, so this is a real negative, not a blind spot. |
 | ds-06 | throw `IOException` on a failed `AssetManager.open` (Android throws; returning NULL is a wrong answer, playbook §4) | **No change** — same crash, same address. Theory spent; do not re-chase it. |
 
-### The open bug
+### SOLVED (ds-07/ds-08): it was the content path, not GL
+
+The GL-query lead in the previous revision was **wrong**, and so was the reasoning that produced it.
+Two corrections worth keeping:
+
+- `glGetIntegerv` in `compat/gles_wrappers.c` is a straight pass-through to the real driver, so
+  `GL_NUM_COMPRESSED_TEXTURE_FORMATS` was always answered correctly. The lead had no basis.
+- The Adreno frames I read as "it is touching GL at the time" came from apkenv's **stack scan**,
+  which reports anything on the stack that looks like a code address. That is not a backtrace and
+  must not be read as one.
+
+The actual cause: **`APKENV_TRACE_FILES` only traced `fopen`/`open`, and this engine probes with
+`stat`/`opendir` first** (it imports `stat`, `opendir`, `readdir`, `chdir`, `getcwd`). So "the
+engine opens no content file at all" was true and completely misleading — it was looking, failing,
+and never reaching `open()`. Tracing `stat`/`opendir` too (now done, in `compat/libc_wrappers.c`)
+gave the answer in one run:
+
+```
+stat(.../android/extras/Android/data/com.ea.deadspace/files/published/stringdata/en-us/deadspace.bin) FAILED
+```
+
+The engine composes an **absolute** path as
+`<GetExternalStorageDirectory()>/Android/data/com.ea.deadspace/files/published/...` — that middle
+segment is fixed in the binary, and the package id in it is **`com.ea.deadspace`**, not the apk's
+`com.eamobile.deadspace_full_azn`. `tools/ds-stage.sh` now stages the tree at that exact path. The
+`m3g::Texture2D` NULL was a downstream symptom of content that was never found.
+
+### The previous (now closed) bug
 
 ```
 signal 11 addr=(nil)  pc = libDeadSpace.so +0x35b570   r3 = 0
@@ -292,3 +319,27 @@ missing/failed content path (nothing is opened, and nothing *fails* to open); a 
    contract point if 1 and 2 come up empty.
 4. Reference device: install the original apk on the HP 10 G2 Tablet and watch `logcat` through the
    same two frames. It runs `armeabi`, so it will take this build.
+
+### ds-07 … ds-10
+
+| run | change | result |
+|---|---|---|
+| ds-07 | trace `stat`/`opendir` too | The engine's real content path, first time it was visible. |
+| ds-08 | move the content to that layout | **No crash.** 407 file ops, content tree walked, 60 fps — and the game's **loading-hint screen** renders: correct text, UI and styling. |
+| ds-09 | port the synthetic-input hook as `APKENV_BLAST_AUTOTAP`, tap twice | **Touch works.** Taps advance the hint screens and land on **Select Difficulty** (Normal / Easy). Pixel coordinates and the engine's own event ids both confirmed correct. |
+| ds-10 | confirm difficulty, continue | **The 3D intro scene renders** — the Ishimura, planet, nebula, starfield, logo. Textured 3D on the engine's own GLES1 device. |
+
+### Open
+
+1. **Audio underruns.** 20 s of audio written in ds-10 but `underrun +2979840` — ~2.9 MB of
+   zero-fill. Sound is flowing but starving, most likely because the engine's audio thread is
+   starved while loading (frame rate dips to 40 fps there too). Needs a look once the game settles
+   into steady play; compare the underrun delta in a quiet scene against a loading one.
+2. **Frame rate** is 40–53 fps in the intro, not the locked 60 of the menus. Expected for a 3D
+   scene on this hardware, but no reference measurement yet — the HP 10 G2 Tablet runs `armeabi`
+   and can take this apk for a side-by-side.
+3. **`stat(<home>//published/var)` fails** — the engine also probes the *writable* home dir for a
+   `published/var`. Unexamined; may matter for saves.
+4. The package still needs rebuilding from the fixed `ds-stage.sh` — the device was restructured
+   in place to test, so the shipped `.ipk` does not yet have the corrected layout.
+5. Gameplay proper is untouched: nothing past the intro has been tried.

@@ -1193,7 +1193,21 @@ int my_vsprintf(char *str, const char *format, va_list ap)
 /* android uses kernel's stat64 as 'struct stat', so do direct syscalls */
 int my_stat(const char *path, void *buf)
 {
-    return syscall(__NR_stat64, path, buf);
+    int r = syscall(__NR_stat64, path, buf);
+    /* Traced under APKENV_TRACE_FILES for the same reason open/fopen are: an
+     * engine that PROBES with stat/opendir before opening (EA BLAST does -
+     * it imports stat, opendir, readdir, chdir) never reaches open() when the
+     * probe fails, so an open-only tracer reports "it never looks for its
+     * content" when the truth is "it looked and did not find it". */
+    trace_file_open("stat", path, r == 0, errno);
+    return r;
+}
+
+DIR *my_opendir(const char *name)
+{
+    DIR *d = opendir(name);
+    trace_file_open("opendir", name, d != NULL, errno);
+    return d;
 }
 
 int my_fstat(int fd, void *buf)
