@@ -21,6 +21,19 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
 - **`android-candidates/`** — candidate `.apk`s for porting (incl. `PvZ HD v.1.1 ANDROID.apk`, the shipped one): `wheresmywater_1.0.2.apk` (the active spike), `wheresmywater2_1.0.1.apk`, `cut-the-rope_2.3.apk`, `fruitninja_1.8.8.apk`, `bejeweledblitz_1.4.4.apk`, `flappybird_1.0.apk`, `templerun2_1.2.1.apk`.
 
 ## Current state
+- **Dead Space (EA Mobile, BLAST engine) — RELEASED 1.0.0 (2026-09-15)**, fresh-installed from the
+  package and verified on a clean profile: `apkenv/packaging/out/com.apkenv.deadspace_1.0.0_all.ipk`
+  (174 MB). Launcher icon, 3:2 letterbox (1024x682), menus, 3D intro and cutscenes, audio with zero
+  underruns, and **gameplay** — Isaac aboard the Ishimura with the HUD laying out correctly. Module:
+  `apkenv/modules/eablast.c`, named for the engine because `com.ea.blast` is EA Mobile's shared
+  Android host of that era. Trail: `plan/DEAD-SPACE.md`; contract `plan/deadspace-contract.txt`.
+  **Two lessons worth carrying:** (1) `APKENV_TRACE_FILES` now traces `stat`/`opendir` as well as
+  `fopen`/`open` — this engine probes before it opens, so an open-only tracer said "it never looks
+  for its content" when it was looking and failing; (2) `AndroidEAAudioCore.Init(AudioTrack,III)` is
+  `(track, framesPerBuffer, channels, sampleRate)` — rate LAST — and the plausible order made the
+  engine generate audio at 8192 Hz while the device drained at 44100, which is the Temple Run 2
+  `nativeInit(II)` lesson recurring. Packaging: the engine cannot read content out of the apk, so
+  `tools/ds-stage.sh` strips the apk to 2.6 MB and ships `published/` as real files read in place.
 - **Fruit Ninja 1.8.8 (Halfbrick Mortar) — ported in ONE SESSION (2026-09-15) and confirmed on the
   panel.** `apkenv/packaging/out/com.apkenv.fruitninja_1.0.0_all.ipk` (49 MB, self-contained: the
   apk carries all 87 MB of assets, no OBB). Landscape 1024×768 on the engine's own ES2 device at a

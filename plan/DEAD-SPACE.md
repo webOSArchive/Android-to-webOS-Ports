@@ -3,7 +3,10 @@
 Target: **`android-candidates/Dead-Space.apk`** — `com.eamobile.deadspace_full_azn` 1.2.0
 (versionCode 1200), the **Amazon Appstore** build, dated 2013-10-22. 296 MB.
 
-Status: **boots, renders, menus navigate, 3D intro scene runs.** See §6 for the device trail.
+Status: **RELEASED 1.0.0 (2026-09-15)** — `apkenv/packaging/out/com.apkenv.deadspace_1.0.0_all.ipk`
+(174 MB), fresh-installed from the package and verified on a clean profile. Boots from the launcher
+icon, menus, 3D intro and cutscenes, and **gameplay** — Isaac aboard the Ishimura with the movement
+tutorial and HUD laying out correctly. See §6 for the device trail.
 Previously: **module written, package built, nothing run yet.** 2026-09-15 evening, following
 `PORTING-PLAYBOOK.md` §1–§2. Everything below is static analysis —
 `apkenv/modules/eablast.c` compiles and
@@ -344,9 +347,37 @@ missing/failed content path (nothing is opened, and nothing *fails* to open); a 
    and can take this apk for a side-by-side.
 3. **`stat(<home>//published/var)` fails** — the engine also probes the *writable* home dir for a
    `published/var`. Unexamined; may matter for saves.
-4. The package still needs rebuilding from the fixed `ds-stage.sh` — the device was restructured
-   in place to test, so the shipped `.ipk` does not yet have the corrected layout.
-5. Gameplay proper is untouched: nothing past the intro has been tried.
+4. ~~The package still needs rebuilding.~~ **Done.** Rebuilt from the fixed `ds-stage.sh`,
+   ship-checked (env has the three real settings and no debug vars; 64x64 icon downscaled from the
+   apk's 170x170 `res/drawable/icon.png`, which is much better art than the 72x72 the manifest
+   points at; content present at the composed path, 1729 files; packaged binary md5 matches the
+   local build), then uninstalled, reinstalled from the `.ipk` and launched on a **fresh profile** —
+   boots to the first-run difficulty select with no save, no crash, 60 fps, audio clean.
+5. Gameplay **works** — the operator played through the intro into the Ishimura. Not yet explored
+   beyond the opening.
+
+## 8. Release 1.0.0
+
+`APPID=com.apkenv.deadspace`, 174 MB. Rebuild with:
+
+```
+apkenv/tools/ds-stage.sh
+APPID=com.apkenv.deadspace \
+  APK=packaging/extras/deadspace/deadspace-stripped.apk \
+  EXTRAS=packaging/extras/deadspace/content \
+  APPINFO=packaging/deadspace/appinfo.json \
+  ENVFILE=packaging/deadspace/apkenv.env \
+  ICON=../dist/deadspace-icon-64.png \
+  apkenv/packaging/build-ipk.sh
+```
+
+Note `ICON=` is pinned: `build-ipk.sh`'s explicit-icon branch **copies without resizing**, so pass
+the already-downscaled 64x64 rather than the 170x170 source. Icon set for listings is in `dist/`
+(`deadspace-icon-{48,64,96,128,170}.png`, a 512 upscale, and the round variant).
+
+Known limits, worth stating with the release: `requiredMemory` is still the initial 400 MB estimate
+rather than a measured figure; the intro runs 40-60 fps against the menus' locked 60; and only the
+opening has been played.
 
 ## 7. Aspect ratio: what the engine actually does (measured, ds-proj2)
 
