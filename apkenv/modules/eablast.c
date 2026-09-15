@@ -132,8 +132,21 @@ blast_trace_unhandled(const char *kind, jmethodID method)
 /* ── audio ─────────────────────────────────────────────────────────────────
  * AndroidEAAudioCore.Startup() builds an AudioTrack(STREAM_MUSIC, rate,
  * CHANNEL_OUT_STEREO, PCM_16BIT, minBuf, MODE_STREAM) and hands the OBJECT to
- * native Init(track, rate, channels, minBuf); the engine then calls write() on
- * it over JNI. So we stand in for the AudioTrack: our object, its write routed
+ * native Init(); the engine then calls write() on it over JNI.
+ *
+ * READ Init's ARGUMENTS FROM THE CALLER. They are NOT (track, rate, channels,
+ * bufferBytes), which is what the name and the surrounding code suggest:
+ *
+ *     v1 = bufsize / (sizeofShort * channels)          // frames per buffer
+ *     Init(track, v1, p0 /*channels*\/, v2 /*samplerate*\/)
+ *
+ * i.e. **Init(track, framesPerBuffer, channels, sampleRate)** — frames first,
+ * rate LAST. Passing (track, 44100, 2, 8192) told the engine its output rate
+ * was 8192 Hz: it generated audio 5.4x too slow for the device draining it,
+ * which is audible as chirpy, stuttering sound and produced 2.9 MB of ring
+ * underrun in 20 s. One transposition, both symptoms. Exactly the Temple Run 2
+ * nativeInit(II) lesson (PORTING-PLAYBOOK.md): a plausible signature is not a
+ * contract. So we stand in for the AudioTrack: our object, its write routed
  * into audio/audiotrack.c. Java takes the rate from
  * AudioTrack.getNativeOutputSampleRate(), i.e. the device decides — 44100 here. */
 #define BLAST_AUDIO_RATE     44100
@@ -746,10 +759,11 @@ eablast_init(struct SupportModule *self, int width, int height, const char *home
     /* AndroidEAAudioCore.Startup() equivalent: build the sink, hand it over. */
     blast_audio_open();
     if (p->AudioCore_Init) {
-        fprintf(stderr, "[BLAST-AUDIO] AudioCore_Init(track, %d, %d, %d)\n",
-                BLAST_AUDIO_RATE, BLAST_AUDIO_CHANNELS, BLAST_AUDIO_BUFBYTES);
+        jint frames = BLAST_AUDIO_BUFBYTES / (2 * BLAST_AUDIO_CHANNELS);
+        fprintf(stderr, "[BLAST-AUDIO] AudioCore_Init(track, frames=%d, ch=%d, rate=%d)\n",
+                frames, BLAST_AUDIO_CHANNELS, BLAST_AUDIO_RATE);
         p->AudioCore_Init(ENV_M, (jclass)&audio_track_obj, (jobject)&audio_track_obj,
-                          BLAST_AUDIO_RATE, BLAST_AUDIO_CHANNELS, BLAST_AUDIO_BUFBYTES);
+                          frames, BLAST_AUDIO_CHANNELS, BLAST_AUDIO_RATE);
     }
 }
 

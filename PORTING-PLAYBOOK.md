@@ -402,6 +402,14 @@ disassembly to find and patch the branch that was faithfully reading the value w
 The same class of bug: `nativeTouch`'s trailing int is the MotionEvent **source** (`0x1002`), not
 padding. **Read the caller for each argument; a plausible signature is not a contract.**
 
+*It recurred immediately.* Dead Space's `AndroidEAAudioCore.Init(AudioTrack,III)` reads like
+`(track, rate, channels, bufferBytes)` and is `(track, framesPerBuffer, channels, **sampleRate**)` —
+the rate is LAST. Passing the plausible order told the engine its output rate was 8192 Hz while the
+device drained at 44100: audible as chirpy, stuttering sound, with 2.9 MB of ring underrun in 20 s.
+One transposition, both symptoms, and neither of them looks like "wrong argument" from the outside.
+The caller computes `bufsize / (sizeofShort * channels)` right in front of the call — thirty seconds
+of reading that was worth more than any amount of listening to the result.
+
 **Prefer fixing the contract over patching the engine.** Once `nativeInit` got real arguments, the
 binary patch that forced Unity's GLES2 device became unnecessary. A patch that works is evidence
 you have found the mechanism - not that you have found the cause.

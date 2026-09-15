@@ -331,10 +331,14 @@ missing/failed content path (nothing is opened, and nothing *fails* to open); a 
 
 ### Open
 
-1. **Audio underruns.** 20 s of audio written in ds-10 but `underrun +2979840` — ~2.9 MB of
-   zero-fill. Sound is flowing but starving, most likely because the engine's audio thread is
-   starved while loading (frame rate dips to 40 fps there too). Needs a look once the game settles
-   into steady play; compare the underrun delta in a quiet scene against a loading one.
+1. ~~Audio underruns.~~ **FIXED (ds-11).** The operator heard it as "stuttery and chirpy", which is
+   a different symptom from starvation and is what pointed at the rate. `Init(AudioTrack,III)` is
+   **`(track, framesPerBuffer, channels, sampleRate)`** — rate LAST — not the plausible
+   `(track, rate, channels, bufferBytes)` I had passed. The engine believed its output rate was
+   8192 Hz while the device drained at 44100. One transposed argument produced both the chirp and
+   the 2.9 MB of zero-fill. Now **`underrun +0` across 60 s**. The caller computes
+   `bufsize / (sizeofShort * channels)` immediately before the call; reading it would have been
+   quicker than any amount of listening.
 2. **Frame rate** is 40–53 fps in the intro, not the locked 60 of the menus. Expected for a 3D
    scene on this hardware, but no reference measurement yet — the HP 10 G2 Tablet runs `armeabi`
    and can take this apk for a side-by-side.
