@@ -1,0 +1,189 @@
+halfbrick/bricknet/FacebookAndroid             Destroy                            ()V                      public static
+halfbrick/bricknet/FacebookAndroid             FeedPost                           (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V public static
+halfbrick/bricknet/FacebookAndroid             FeedPostResultNative               ()V                      private native
+halfbrick/bricknet/FacebookAndroid             Initialize                         (Ljava/lang/String;)V    public static
+halfbrick/bricknet/FacebookAndroid             IsFinished                         ()Z                      public static
+halfbrick/bricknet/FacebookAndroid             Login                              ()V                      public static
+halfbrick/bricknet/GoogleAndroidDelegate       Destroy                            ()V                      public static
+halfbrick/bricknet/GoogleAndroidDelegate       Initialise                         (Ljava/lang/String;Ljava/lang/String;)V public static
+halfbrick/bricknet/GoogleAndroidDelegate       IsFinished                         ()Z                      public static
+halfbrick/bricknet/GoogleAndroidDelegate       Login                              ()V                      public static
+halfbrick/bricknet/TwitterAndroid              FeedPost                           (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V public static
+halfbrick/bricknet/TwitterAndroid              FeedPostResultNative               (I)V                     private static native
+halfbrick/mortar/AdMob/AdMob                   HideBannerAd                       ()V                      public static
+halfbrick/mortar/AdMob/AdMob                   HideFullscreenAd                   ()V                      public static
+halfbrick/mortar/AdMob/AdMobInterstitial       DismissFullscreenAd                ()V                      public static
+halfbrick/mortar/AdMob/AdMobInterstitial       HideFullscreenAd                   ()V                      public static
+halfbrick/mortar/AdMob/AdMobInterstitial       IsAdSkipped                        ()Z                      public static
+halfbrick/mortar/AdMob/AdMobInterstitial       LoadFullscreenAd                   ()V                      public static
+halfbrick/mortar/AdMob/AdMobInterstitial       ShowFullscreenAd                   ()V                      public static
+halfbrick/mortar/AdMob/AdMobInterstitial       SupportsBannerAd                   ()Z                      public static
+halfbrick/mortar/AdMob/AdMobInterstitial       SupportsFullscreenAd               ()Z                      public static
+halfbrick/mortar/AdMob/AdMob                   IsAdSkipped                        ()Z                      public static
+halfbrick/mortar/AdMob/AdMob                   ShowBannerAd                       ()V                      public static
+halfbrick/mortar/AdMob/AdMob                   SupportsBannerAd                   ()Z                      public static
+halfbrick/mortar/AdMob/AdMob                   SupportsFullscreenAd               ()Z                      public static
+halfbrick/mortar/Advertising                   showWebHtml                        (Ljava/lang/String;)Z    public static
+halfbrick/mortar/AudioDecoderStream            read                               ([BII)J                  public
+halfbrick/mortar/Beintoo                       AddScore                           (Ljava/lang/String;IIZ)V public static
+halfbrick/mortar/Beintoo                       BeintooStart                       (Z)V                     public static
+halfbrick/mortar/BeintooDelegate               native_BeintooHasNotRewardsCoverage ()V                      private native
+halfbrick/mortar/BeintooDelegate               native_BeintooHasRewardsCoverage   ()V                      private native
+halfbrick/mortar/BeintooDelegate               native_OfferComplete               ()V                      private native
+halfbrick/mortar/BeintooDelegate               native_PlayerDidFailGetScore       ()V                      private native
+halfbrick/mortar/BeintooDelegate               native_PlayerDidFailLogin          ()V                      private native
+halfbrick/mortar/BeintooDelegate               native_PlayerDidFailSubmitScore    ()V                      private native
+halfbrick/mortar/BeintooDelegate               native_PlayerDidGetScore           (I)V                     private native
+halfbrick/mortar/BeintooDelegate               native_PlayerDidLogin              ()V                      private native
+halfbrick/mortar/BeintooDelegate               native_PlayerDidSignup             ()V                      private native
+halfbrick/mortar/BeintooDelegate               native_PlayerDidSubmitScore        ()V                      private native
+halfbrick/mortar/Beintoo                       GetPoints                          (Ljava/lang/String;)V    public static
+halfbrick/mortar/Beintoo                       IsLoggedIn                         ()Z                      public static
+halfbrick/mortar/Beintoo                       IsOnline                           ()Z                      public static
+halfbrick/mortar/Beintoo                       Login                              ()V                      public static
+halfbrick/mortar/Beintoo                       RewardsAvailable                   ()V                      public static
+halfbrick/mortar/Beintoo                       setApiKey                          (Ljava/lang/String;)V    public static
+halfbrick/mortar/Beintoo                       Signup                             ()V                      public static
+halfbrick/mortar/BillingServiceAPIV3           GotDisplayCostNative               (Ljava/lang/String;Ljava/lang/String;)V private native
+halfbrick/mortar/BillingServiceSupport         Destroy                            ()V                      public static
+halfbrick/mortar/BillingServiceSupport         GetDisplayCost                     (Ljava/lang/String;)V    public static
+halfbrick/mortar/BillingServiceSupport         Initialize                         ()V                      public static
+halfbrick/mortar/BillingServiceSupport         InitiatePurchase                   (Ljava/lang/String;Ljava/lang/String;)Z public static
+halfbrick/mortar/BillingServiceSupport         IsBillingSupported                 ()Z                      public static
+halfbrick/mortar/Consts$PurchaseState          values                             ()[Lcom/halfbrick/mortar/Consts$PurchaseState; public static
+halfbrick/mortar/Consts$ResponseCode           values                             ()[Lcom/halfbrick/mortar/Consts$ResponseCode; public static
+halfbrick/mortar/GLSurfaceViewPatched$EglHelper start                              ()V                      public
+halfbrick/mortar/GLSurfaceViewPatched$LogWriter close                              ()V                      public
+halfbrick/mortar/GLSurfaceViewPatched$LogWriter write                              ([CII)V                  public
+halfbrick/mortar/GLSurfaceViewPatched          init                               ()V                      private
+halfbrick/mortar/HBSupport                     Decrypt                            ([B)[B                   public static
+halfbrick/mortar/HBSupport                     Encrypt                            (Ljava/lang/String;)[B   public static
+halfbrick/mortar/HBSupport                     GetAccountEmails                   ()Ljava/lang/String;     public static
+halfbrick/mortar/HBSupport                     GetAndroidID                       ()Ljava/lang/String;     public static
+halfbrick/mortar/HBSupport                     GetAndroidVersion                  ()Ljava/lang/String;     public static
+halfbrick/mortar/HBSupport                     GetBoolPreference                  (Ljava/lang/String;)Z    public static
+halfbrick/mortar/HBSupport                     GetCountry                         ()Ljava/lang/String;     public static
+halfbrick/mortar/HBSupport                     GetDensityDPIType                  ()I                      public static
+halfbrick/mortar/HBSupport                     GetDeviceID                        ()Ljava/lang/String;     public static
+halfbrick/mortar/HBSupport                     GetDeviceLanguage                  ()Ljava/lang/String;     public static
+halfbrick/mortar/HBSupport                     GetDeviceLocale                    ()Ljava/lang/String;     public static
+halfbrick/mortar/HBSupport                     GetGoogleAccount                   ()Ljava/lang/String;     public static
+halfbrick/mortar/HBSupport                     GetManufacturer                    ()Ljava/lang/String;     public static
+halfbrick/mortar/HBSupport                     GetModel                           ()Ljava/lang/String;     public static
+halfbrick/mortar/HBSupport                     GetPackageName                     ()Ljava/lang/String;     public static
+halfbrick/mortar/HBSupport                     GetPackageVersion                  ()Ljava/lang/String;     public static
+halfbrick/mortar/HBSupport                     GetPhysicalScreenSizeTypeMask      ()I                      public static
+halfbrick/mortar/HBSupport                     GetTouchscreenCapabilities         ()I                      public static
+halfbrick/mortar/HBSupport                     GetUUID                            ()Ljava/lang/String;     public static declared-synchronized
+halfbrick/mortar/HBSupport                     GetWifi                            ()I                      public static
+halfbrick/mortar/HBSupport                     Init                               (Ljava/lang/String;Ljava/lang/String;)V public static
+halfbrick/mortar/HBSupport                     IsDeviceTablet                     ()I                      public static
+halfbrick/mortar/HBSupport                     PreferenceKeyExists                (Ljava/lang/String;)Z    public static
+halfbrick/mortar/HBSupport                     SetBoolPreference                  (Ljava/lang/String;Z)V   public static
+halfbrick/mortar/HttpClient                    FinishedCopyingDataJNI             ()V                      public
+halfbrick/mortar/HttpClient                    HttpRequest                        (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[BII)V public
+halfbrick/mortar/KeyStore                      GetValue                           (Ljava/lang/String;)Ljava/lang/String; public static
+halfbrick/mortar/KeyStore                      SetValueIf                         (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z public static
+halfbrick/mortar/KeyStore                      SetValue                           (Ljava/lang/String;Ljava/lang/String;)Z public static
+halfbrick/mortar/LocationHelper                StartTracking                      ()V                      public static
+halfbrick/mortar/LocationHelper                StopTracking                       ()V                      public static
+halfbrick/mortar/MortarAudioMixerOut           Create                             ()Lcom/halfbrick/mortar/MortarAudioMixerOut; public static
+halfbrick/mortar/MortarAudioMixerOut           WriteData                          ([B)V                    public
+halfbrick/mortar/MortarDialog                  ButtonWasPressedNative             (II)V                    private static native
+halfbrick/mortar/MortarDialog                  createDialog                       (I)Z                     public static
+halfbrick/mortar/MortarDialog                  removeDialog                       (I)V                     public static
+halfbrick/mortar/MortarDialog                  showDialog                         (I)V                     public static
+halfbrick/mortar/MortarGameActivity            NotifyHandleOpenURLNative          (Ljava/lang/String;)V    private static native
+halfbrick/mortar/MortarGameActivity            SetScreenResolution                (II)V                    public static
+halfbrick/mortar/MortarGameActivity            showWebHtml                        (Ljava/lang/String;)Z    public
+halfbrick/mortar/MortarGameView                init                               (ZIILandroid/content/Context;Lcom/halfbrick/mortar/MortarGameActivity;)V private
+halfbrick/mortar/MortarGameViewPatched         init                               (ZIILandroid/content/Context;Lcom/halfbrick/mortar/MortarGameActivity;)V private
+halfbrick/mortar/MortarPurchaseObserver        PurchaseResultNative               (Ljava/lang/String;ZILjava/lang/String;Ljava/lang/String;)V private native
+halfbrick/mortar/NativeGameLib                 native_keyboardProcessCancelled    ()V                      private static native
+halfbrick/mortar/NativeGameLib                 native_keyboardProcessCharacter    (I)V                     private static native
+halfbrick/mortar/NativeGameLib                 native_keyboardProcessClearCharacters ()V                      private static native
+halfbrick/mortar/NativeGameLib                 native_keyboardProcessDelete       ()V                      private static native
+halfbrick/mortar/NativeGameLib                 native_keyboardProcessDone         ()Z                      private static native
+halfbrick/mortar/NativeGameLib                 native_threadEntry                 (I)V                     public static native
+halfbrick/mortar/NativeGameLib                 SupportsOpenSL                     ()Z                      public static
+halfbrick/mortar/Provider_AdColonyBackend      AddZoneId                          (Ljava/lang/String;)V    public static
+halfbrick/mortar/Provider_AdColonyBackend      CheckIfRewardedAdIsAvailable       ()Z                      public static
+halfbrick/mortar/Provider_AdColonyBackend      Destroy                            ()V                      public static
+halfbrick/mortar/Provider_AdColonyBackend      GetRewardAmount                    ()I                      public static
+halfbrick/mortar/Provider_AdColonyBackend      GetRewardName                      ()Ljava/lang/String;     public static
+halfbrick/mortar/Provider_AdColonyBackend      Initialise                         (Ljava/lang/String;Ljava/lang/String;)V public static
+halfbrick/mortar/Provider_AdColonyBackend      RewardedAdResult                   (ZLjava/lang/String;I)V  private static native
+halfbrick/mortar/Provider_AdColonyBackend      ShowAd                             ()V                      public static
+halfbrick/mortar/Provider_MoPubBackend         BannerAdLoadResult                 (Z)V                     private static native
+halfbrick/mortar/Provider_MoPubBackend         Destroy                            ()V                      public static
+halfbrick/mortar/Provider_MoPubBackend         FullscreenAdDismissed              ()V                      private static native
+halfbrick/mortar/Provider_MoPubBackend         FullscreenAdLoadResult             (Z)V                     private static native
+halfbrick/mortar/Provider_MoPubBackend         GetAdHeight                        (Ljava/lang/String;)I    public static
+halfbrick/mortar/Provider_MoPubBackend         GetAdWidth                         (Ljava/lang/String;)I    public static
+halfbrick/mortar/Provider_MoPubBackend         GetBannerAdPixelData               (Ljava/lang/String;)V    public static
+halfbrick/mortar/Provider_MoPubBackend         HideBannerAd                       (Ljava/lang/String;)V    public static
+halfbrick/mortar/Provider_MoPubBackend         HideFullscreenAd                   ()V                      public static
+halfbrick/mortar/Provider_MoPubBackend         Initialise                         ()V                      public static
+halfbrick/mortar/Provider_MoPubBackend_InMobi_Banner Init                               ()V                      public
+halfbrick/mortar/Provider_MoPubBackend_InMobi_MedRect Init                               ()V                      public
+halfbrick/mortar/Provider_MoPubBackend         IsBannerAdLoaded                   (Ljava/lang/String;)Z    public static
+halfbrick/mortar/Provider_MoPubBackend         LoadBannerAd                       (Ljava/lang/String;II)V  public static
+halfbrick/mortar/Provider_MoPubBackend         LoadFullscreenAd                   (Ljava/lang/String;)V    public static
+halfbrick/mortar/Provider_MoPubBackend         MoveBannerAd                       (Ljava/lang/String;IIZ)V public static
+halfbrick/mortar/Provider_MoPubBackend         MoveBannerAdWithScale              (Ljava/lang/String;IIZF)V public static
+halfbrick/mortar/Provider_MoPubBackend         SetBannerAdOpacity                 (Ljava/lang/String;F)V   public static
+halfbrick/mortar/Provider_MoPubBackend         SetPixelData                       (Ljava/lang/String;[III)V private static native
+halfbrick/mortar/Provider_MoPubBackend         SetViewportBounds                  (IIII)V                  public static
+halfbrick/mortar/Provider_MoPubBackend         ShowBannerAd                       (Ljava/lang/String;IIZF)V public static
+halfbrick/mortar/Provider_MoPubBackend         ShowFullscreenAd                   ()V                      public static
+halfbrick/mortar/Provider_MoPubBackend         SupportsBannerAds                  ()Z                      public static
+halfbrick/mortar/Provider_MoPubBackend         Update                             ()V                      public static
+halfbrick/mortar/Provider_VungleBackend        CheckIfRewardedAdIsAvailable       ()Z                      public static
+halfbrick/mortar/Provider_VungleBackend        Destroy                            ()V                      public static
+halfbrick/mortar/Provider_VungleBackend        Initialise                         (Ljava/lang/String;)V    public static
+halfbrick/mortar/Provider_VungleBackend        RewardedAdResult                   (Z)V                     private static native
+halfbrick/mortar/Provider_VungleBackend        ShowAd                             ()V                      public static
+halfbrick/mortar/Provider_ZigiBackend          DealAvailable                      (ILjava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V private static native
+halfbrick/mortar/Provider_ZigiBackend          HideMap                            ()V                      public static
+halfbrick/mortar/Provider_ZigiBackend          Initialise                         (Ljava/lang/String;)V    public static
+halfbrick/mortar/Provider_ZigiBackend          InitMapDimensions                  (IIII)V                  public static
+halfbrick/mortar/Provider_ZigiBackend          LocateOnMap                        ()V                      public static
+halfbrick/mortar/Provider_ZigiBackend          RewardRedeemed                     ()Z                      public static
+halfbrick/mortar/Provider_ZigiBackend          SetViewportBounds                  (IIII)V                  public static
+halfbrick/mortar/Provider_ZigiBackend          ShowMap                            (Ljava/lang/String;)V    public static
+halfbrick/mortar/Provider_ZigiBackend          ShowRedeemRewardScreen             (ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;IILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V private static native
+halfbrick/mortar/Provider_ZigiBackend          SponsorOfferRedeemed               ()V                      public static
+halfbrick/mortar/Provider_ZigiBackend          UserInformedAboutDeal              (Ljava/lang/String;)V    public static
+halfbrick/mortar/PushServiceUtilities          AttemptRegisterForPushNotifications ()V                      public static
+halfbrick/mortar/PushServiceUtilities          ExtractDeviceToken                 ()Ljava/lang/String;     public static
+halfbrick/mortar/PushServiceUtilities          ExtractNotificationMessage         ()Ljava/lang/String;     public static
+halfbrick/mortar/PushServiceUtilities          ExtractNotificationOptionalData    ()Ljava/lang/String;     public static
+halfbrick/mortar/PushServiceUtilities          ExtractNotificationPushHash        ()Ljava/lang/String;     public static
+halfbrick/mortar/PushServiceUtilities          ExtractNotificationSplitId         ()Ljava/lang/String;     public static
+halfbrick/mortar/Reachability                  isOnline                           ()Z                      public static
+halfbrick/mortar/SoftKeyboard                  HideKeyboard                       ()V                      public static
+halfbrick/mortar/SoftKeyboard                  Init                               ()V                      public static
+halfbrick/mortar/SoftKeyboard                  ShowKeyboard                       (I)V                     public static
+halfbrick/mortar/SoftKeyboard                  UpdateKeyboard                     ()Z                      public static
+halfbrick/mortar/SoundManager$AudioLoaderThread$ActiveSound pause                              ()V                      public
+halfbrick/mortar/SoundManager$AudioLoaderThread$ActiveSound stop                               ()V                      public
+halfbrick/mortar/SoundManager$IActiveSound     pause                              ()V                      public abstract
+halfbrick/mortar/SoundManager$IActiveSound     stop                               ()V                      public abstract
+halfbrick/mortar/SoundManager                  Update                             (F)V                     public static
+halfbrick/mortar/SplashScreenTimed             Update                             (F)V                     public
+halfbrick/mortar/SplashScreen                  Update                             (F)V                     public
+halfbrick/mortar/WebViewEmbedded               ClearContents                      ()V                      public
+halfbrick/mortar/WebViewEmbedded               Destroy                            ()V                      public
+halfbrick/mortar/WebViewEmbedded               FailedLoading                      ()V                      private native
+halfbrick/mortar/WebViewEmbedded               FinishedLoading                    ()V                      private native
+halfbrick/mortar/WebViewEmbedded               Init                               ()V                      private
+halfbrick/mortar/WebViewEmbedded               LoadPage                           (Ljava/lang/String;)V    public
+halfbrick/mortar/WebViewEmbedded               RemoveFromView                     ()V                      public
+halfbrick/mortar/WebViewEmbedded               SetRenderPos                       (IIII)V                  public
+halfbrick/mortar/YoutubeEmbedded               ClearContents                      ()V                      public
+halfbrick/mortar/YoutubeEmbedded               Destroy                            ()V                      public
+halfbrick/mortar/YoutubeEmbedded               FinishedLoading                    ()V                      private native
+halfbrick/mortar/YoutubeEmbedded               Init                               ()V                      private
+halfbrick/mortar/YoutubeEmbedded               LoadMovie                          (Ljava/lang/String;Ljava/lang/String;)V public
+halfbrick/mortar/YoutubeEmbedded               RemoveFromView                     ()V                      public
+halfbrick/mortar/YoutubeEmbedded               SetRenderPos                       (IIII)V                  public

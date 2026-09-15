@@ -21,6 +21,21 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
 - **`android-candidates/`** — candidate `.apk`s for porting (incl. `PvZ HD v.1.1 ANDROID.apk`, the shipped one): `wheresmywater_1.0.2.apk` (the active spike), `wheresmywater2_1.0.1.apk`, `cut-the-rope_2.3.apk`, `fruitninja_1.8.8.apk`, `bejeweledblitz_1.4.4.apk`, `flappybird_1.0.apk`, `templerun2_1.2.1.apk`.
 
 ## Current state
+- **Fruit Ninja 1.8.8 (Halfbrick Mortar) — ported in ONE SESSION (2026-09-15), pending the
+  operator's hands-on check.** `apkenv/packaging/out/com.apkenv.fruitninja_1.0.0_all.ipk` (49 MB,
+  self-contained: the apk carries all 87 MB of assets, no OBB). Landscape 1024×768 on the engine's
+  own ES2 device, menus → mode select → Classic gameplay with slicing, scoring and bombs, audio at
+  44100/stereo with zero underruns, saves persisting across a reinstall. New module:
+  `apkenv/modules/mortar.c` (Mortar 1.8.x host generation — NOT the 1.7.x one upstream
+  `modules/fruitninja.c` targets). Trail: `plan/FRUITNINJA.md`; contract table
+  `plan/fruitninja-contract.txt` (regen: `apkenv/tools/fn-contract.sh`).
+  **The lesson worth carrying: call the engine's `JNI_OnLoad`** — it is where an engine
+  `RegisterNatives` its own callbacks, and skipping it cost all the game's audio via a worker
+  thread that exited the instant it called an unbound `native_threadEntry`. New tools:
+  `apkenv/tools/push-run.sh` (binary-only device cycle, no re-install),
+  `apkenv/tools/fn-contract.sh`, and `APKENV_MORTAR_AUTOTAP` — synthetic taps and swipes through
+  the real input path, which is how the port was driven to a scoring Classic game with nobody
+  holding the device.
 - **Aralon: Sword and Shadow HD (Unity 4.0.1 + Mono) — RELEASED 1.0.0 (2026-09-14)**, installed
   fresh on the TouchPad and verified (clean env, fresh profile, no debug tracers):
   `apkenv/packaging/out/com.apkenv.aralon_1.0.0_all.ipk` (291 MB, OBB bundled). Landscape, menus +

@@ -1,0 +1,10 @@
+{
+    "id": "com.apkenv.fruitninja",
+    "version": "1.0.0",
+    "vendor": "apkenv",
+    "type": "pdk",
+    "main": "apkenv",
+    "title": "Fruit Ninja",
+    "icon": "icon.png",
+    "requiredMemory": 250
+}

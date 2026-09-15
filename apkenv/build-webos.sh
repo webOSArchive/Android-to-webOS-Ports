@@ -110,6 +110,7 @@ SOURCES="$SOURCES modules/wheresmywater2.c"
 SOURCES="$SOURCES modules/marmalade.c"
 SOURCES="$SOURCES modules/angrybirds.c"
 SOURCES="$SOURCES modules/unity.c"
+SOURCES="$SOURCES modules/mortar.c"
 
 OBJS=""
 for src in $SOURCES; do

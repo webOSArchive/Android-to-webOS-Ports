@@ -48,7 +48,21 @@ the runtime for game behaviour is a dead end (we did it for a week).
 4. Confirm the engine side: find the string's literal-pool xref in the disassembly
    (`objdump -d -M force-thumb`; search the ELF for the little-endian address of the name string)
    and read the loop after the JNI call. A `while (slot == 0) deviceYield()` there *is* the freeze.
-5. **Check JNI signatures per host generation.** Same method name ≠ same args: Airplay's
+5. **Find `JNI_OnLoad` and call it.** `nm -D <engine>.so | grep JNI_OnLoad`. Dalvik runs it at
+   `System.loadLibrary` time and it is where an engine `RegisterNatives` **its own callbacks** — the
+   Java methods declared `native` in the smali. A module that skips it leaves every one of them
+   unbound, and the failure is silent and remote from the cause: Fruit Ninja's worker thread called
+   `NativeGameLib.native_threadEntry`, got nothing, and exited one log line later — and that thread
+   was the one that creates the audio sink, so the whole game was mute with no error anywhere.
+   Resolve it from the *game* lib by name (`LOOKUP_LIBM("lib<game>", "JNI_OnLoad")`); apks often
+   ship a second `.so` with a `JNI_OnLoad` of its own.
+6. **Split the contract by modifier.** A contract row declared `native` in the smali is an engine
+   **callback**, not a host service: answer it by calling the engine's own registered function
+   (`jnienv_find_native_method(class, name)`), never by inventing a return value. Scope the name
+   scan to the game's own Java packages — a modern apk bundles half a dozen ad/analytics SDKs whose
+   `init`/`start`/`read`/`close` collide with unrelated strings and bury the real contract
+   (189 useful rows vs 955; `apkenv/tools/fn-contract.sh` does this for a Mortar apk).
+7. **Check JNI signatures per host generation.** Same method name ≠ same args: Airplay's
    `audioPlay(String,int)` vs Marmalade's `(String,IJJI)`, `soundInit(ZI)` vs `(IZI)`. Reading a
    5-arg va_list off a 2-arg call silently yields garbage. Dispatch on `method->sig`.
 
@@ -97,6 +111,14 @@ file if it keeps one, to be sure it is the setting and not an internal scalar. B
 engineering a value out of an engine, look in the stores you already host: prefs, save files,
 the data dir.
 
+**You can test touch without a finger.** `APKENV_MORTAR_AUTOTAP="x,y@frame;x1,y1>x2,y2@frame"`
+(`modules/mortar.c`) presses, drags and releases through the module's own `input()` path, so it
+exercises the real contract — normalized coordinates, Android action codes, `ACTION_POINTER_DOWN`
+for a second finger — rather than a shortcut around it. Paired with `tools/grab.sh` it took Fruit
+Ninja from "boots" to "scored 4 points in Classic mode, sliced a bomb" with nobody in the room, and
+it makes "taps do nothing" reproducible instead of anecdotal. Copy the pattern into the next
+module; keep it env-gated and out of every shipped `apkenv.env`.
+
 **Input focus comes from the launcher, not from novacom.** A binary started with
 `novacom run` renders fine but receives **no SDL input at all** — `ev_total=1` over 2400 polls
 and, tellingly, **no `SDL_ACTIVEEVENT`**. Installed and launched from its icon, the same binary
@@ -108,6 +130,17 @@ like a portrait game and is one on phones, but this build calls `setOrientation(
 `SCREEN_ORIENTATION_LANDSCAPE` and its manifest declares none. Handling `setOrientation` as a
 logged no-op is cheap and settles the question before anyone builds a rotation path.
 
+**An asynchronous host operation must stay asynchronous.** Fruit Ninja's `HttpClient.HttpRequest`
+runs on a Java `Thread` and publishes into public fields the engine polls (`IsFinished`, then
+`ResponseCode`/`Result`/`ReturnedHeaders`). Answering it *inside the call* — IsFinished already true
+when `HttpRequest` returned — made the engine parse a response for a request it had not finished
+registering, and it dereferenced NULL in its own NetworkManager. Retiring it ~30 frames later fixed
+the crash. Reproduce the host's **timing**, not just its values; and reproduce the **failure path it
+actually has** (that one: `Result = new byte[0]`, `IsFinished = true`, `ResponseCode` left 0,
+`ReturnedHeaders` left null — exactly what an offline device produces, which the game already has a
+screen for). Also set the fields the Java worker sets and you did not think mattered: the engine
+finds its own request context through `RequestPointer`.
+
 **Dialogs / blocking host calls.** Text entry (`getInputString` → native `setInputText`), error
 boxes (`showError`), anything modal: answer them synchronously from the module (check the engine
 clears its result slot *before* the call — then an in-call answer is race-free). Never answer
@@ -115,6 +148,13 @@ empty strings where the game re-prompts.
 
 **Audio (three shapes seen).**
 - FMOD → `audio/fmod_pump.c` (AudioTrack-style pull pump; WMW).
+- **Engine mixes, Java just plays** → `audio/audiotrack.c` directly. Halfbrick Mortar's
+  `MortarAudioMixerOut.Create()` + `WriteData([B/[S)` is a bare `AudioTrack(44100, STEREO,
+  PCM_16BIT, MODE_STREAM)`; read the ctor for the rate/format instead of guessing, hand the bytes
+  to `apkenv_audiotrack_write` and let its blocking back-pressure pace the engine's audio thread.
+  The easiest shape there is — *if* the engine's thread is alive (see `JNI_OnLoad` in §2). Prove it
+  with a periodic meter, not a one-shot line: bytes/second against `rate*channels*2` says the pump
+  tracks real time, and an underrun delta of 0 says the ring never ran dry.
 - Marmalade `SoundPlayer.generateAudio(short[], nFrames)` → mixer **post-mix hook**
   (`apkenv_mixer_set_postmix`, SDL `Mix_SetPostMix`); `nFrames` is per-channel; widen mono→stereo.
 - MediaPlayer music (`audioPlay(path)`) → SDL_mixer music. Device facts: the TouchPad's
@@ -294,7 +334,10 @@ TouchPad — and the remaining work went straight back to being ordinary Java-co
 ## 6. Checklist for the next game
 
 - [ ] Triage (engine, GL, audio, Java share); identify the *game* binary vs the *runtime*.
-- [ ] Host contract table: engine→Java names vs module handlers; blocking-capable gaps ranked.
+- [ ] **`JNI_OnLoad`**: does the engine export one? Call it before anything else — it is where the
+      engine binds its own callbacks, and skipping it fails silently and far from the cause.
+- [ ] Host contract table: engine→Java names vs module handlers; blocking-capable gaps ranked;
+      rows declared `native` are the engine's callbacks, answered from the RegisterNatives table.
 - [ ] Signature check per host generation for every shared method name.
 - [ ] Tracer + per-contract log lines in the module; test protocol written (expected lines).
 - [ ] Input pump on yield; dialogs answered; audio shape identified; display aspect declared.
@@ -305,6 +348,8 @@ TouchPad — and the remaining work went straight back to being ordinary Java-co
       can see (music/sound volume) to whatever the shim does itself.
 - [ ] Any generated `EXTRAS=` payload (decoded audio, splash) has a **script** that rebuilds it and
       verifies a checksum — never a lone copy in `packaging/stage/`, which every build wipes.
+- [ ] Synthetic input (`APKENV_MORTAR_AUTOTAP`-style) + `tools/grab.sh` so the port can be driven
+      through menus and gameplay without waiting on a person.
 - [ ] One change per device test; results recorded in `plan/`.
 - [ ] **Unity?** Which host generation (`nativeSetInputCanceled` in the native table = Unity 4's
       order); add `plan/<game>-mono-imports.txt` and regenerate `compat/mono_symbols.h`; IL-scan the
@@ -447,3 +492,21 @@ was a **thread the Android reference had and we didn't**.
   lets the compositor show through.
 - `tools/grab.sh`.
 
+---
+
+## Lessons from Fruit Ninja (Halfbrick Mortar), 2026-09-15
+
+Full trail: `plan/FRUITNINJA.md`. Ported in one session, ten device runs, no crashes in the final
+build. The general points are folded into §2, §3 and §4 above; the two worth stating plainly:
+
+**The static pass can be confidently wrong, and the tracer is what catches it.** The contract
+derivation found exactly one reference to `native_threadEntry` — its own `JNINativeMethod` entry —
+and concluded "dead code from an older build". It is in fact how the engine attaches its audio
+thread to the VM. The always-on unhandled-call tracer printed it on the first device run, one line
+before the thread's `<<< end`. **Ship the tracer before the first run even when the static pass
+looks complete** — especially then, because that is when you will not go looking.
+
+**One root cause can be behind several unrelated-looking symptoms.** No sound, a worker thread that
+exits instantly, and dialogs that could never have been answered were all the same missing
+`JNI_OnLoad`. Before theorising separately about an audio path and a threading bug, check whether
+one unbound mechanism explains both.
