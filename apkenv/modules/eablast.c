@@ -36,6 +36,7 @@
 
 #include "common.h"
 #include "../audio/audiotrack.h"
+#include "../compat/gles_wrappers.h"
 
 #include <ctype.h>
 #include <limits.h>
@@ -89,6 +90,7 @@ struct SupportModulePriv {
     blast_audioinit_t   AudioCore_Init;
     blast_accel_t       NativeOnAcceleration;
 
+    int  lb_ox, lb_oy;        /* letterbox offsets on the real framebuffer */
     char home[PATH_MAX];
     char content_root[PATH_MAX];
     int  screen_w, screen_h;
@@ -676,8 +678,38 @@ eablast_init(struct SupportModule *self, int width, int height, const char *home
     const char *root;
 
     global = GLOBAL_M;
+    /* Letterbox (APKENV_BLAST_LOGICAL=WxH). Dead Space lays its UI out for a
+     * WIDER surface than the TouchPad's 4:3: on 1024x768 the main menu's
+     * buttons overlap ("Options" runs into "Extras"). Present the engine a
+     * surface of the target aspect, centred on the real screen, and shift its
+     * viewport/scissor and our touches to match — the same mechanism PvZ HD
+     * uses (playbook §4 Display). 1280x800 on 1024x768 gives a 1024x640
+     * surface with 64px bars top and bottom.
+     *
+     * This also guards against the other half of the problem: a game squeezed
+     * into the wrong aspect can place in-game HUD elements off-screen. */
+    p->lb_ox = p->lb_oy = 0;
+    {
+        const char *l = getenv("APKENV_BLAST_LOGICAL");
+        int lw = 0, lh = 0;
+        if (l && sscanf(l, "%dx%d", &lw, &lh) == 2 && lw > 0 && lh > 0) {
+            double sc = (double)width / lw;
+            int w, h;
+            if ((double)height / lh < sc) sc = (double)height / lh;
+            w = (int)(lw * sc + 0.5) & ~1;
+            h = (int)(lh * sc + 0.5) & ~1;
+            p->lb_ox = (width - w) / 2;
+            p->lb_oy = (height - h) / 2;
+            global->module_hacks->viewport_offset_x = p->lb_ox;
+            global->module_hacks->viewport_offset_y = p->lb_oy;
+            fprintf(stderr, "[BLAST-LB] logical %dx%d on %dx%d -> surface %dx%d at +%d,+%d\n",
+                    lw, lh, width, height, w, h, p->lb_ox, p->lb_oy);
+            width = w; height = h;
+        }
+    }
     p->screen_w = width;
     p->screen_h = height;
+
     snprintf(p->home, sizeof(p->home), "%s", home);
 
     /* The engine opens RELATIVE paths ("published/sounds/soundBase.sb") with
@@ -861,7 +893,11 @@ eablast_input(struct SupportModule *self, int event, int x, int y, int finger)
     else if (event == ACTION_UP)   raw = p->id_up;
     else if (event == ACTION_MOVE) raw = p->id_move;
 
-    /* PIXELS — SendRawPointerEvent passes getX(i)/getY(i) undivided. */
+    /* PIXELS — SendRawPointerEvent passes getX(i)/getY(i) undivided — and in
+     * the engine's own surface space, so undo the letterbox offset. */
+    x -= p->lb_ox;
+    y -= p->lb_oy;
+
     if (logged++ < 40)
         fprintf(stderr, "[BLAST-TOUCH] ev=%d finger=%d (%d,%d) -> raw=%d module=%d\n",
                 event, finger, x, y, raw, p->module_touchscreen);
@@ -900,6 +936,8 @@ eablast_update(struct SupportModule *self)
         }
     }
 
+    if (p->lb_ox || p->lb_oy)
+        apkenv_gles_clear_screen();
     p->NativeOnDrawFrame(ENV_M, GLOBAL_M);
     if (blast_frames == 1)
         fprintf(stderr, "[BLAST] first NativeOnDrawFrame returned\n");
