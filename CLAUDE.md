@@ -21,11 +21,14 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
 - **`android-candidates/`** — candidate `.apk`s for porting (incl. `PvZ HD v.1.1 ANDROID.apk`, the shipped one): `wheresmywater_1.0.2.apk` (the active spike), `wheresmywater2_1.0.1.apk`, `cut-the-rope_2.3.apk`, `fruitninja_1.8.8.apk`, `bejeweledblitz_1.4.4.apk`, `flappybird_1.0.apk`, `templerun2_1.2.1.apk`.
 
 ## Current state
-- **Fruit Ninja 1.8.8 (Halfbrick Mortar) — ported in ONE SESSION (2026-09-15), pending the
-  operator's hands-on check.** `apkenv/packaging/out/com.apkenv.fruitninja_1.0.0_all.ipk` (49 MB,
-  self-contained: the apk carries all 87 MB of assets, no OBB). Landscape 1024×768 on the engine's
-  own ES2 device, menus → mode select → Classic gameplay with slicing, scoring and bombs, audio at
-  44100/stereo with zero underruns, saves persisting across a reinstall. New module:
+- **Fruit Ninja 1.8.8 (Halfbrick Mortar) — ported in ONE SESSION (2026-09-15) and confirmed on the
+  panel.** `apkenv/packaging/out/com.apkenv.fruitninja_1.0.0_all.ipk` (49 MB, self-contained: the
+  apk carries all 87 MB of assets, no OBB). Landscape 1024×768 on the engine's own ES2 device at a
+  vsync-locked **59.2 fps**; every mode reached and running (Classic, Arcade, Zen, Dojo, Extras,
+  Multiplayer setup), the pause HUD and the end-of-game results screen; audio at 44100/stereo with
+  zero underruns; saves and high scores persisting across a reinstall. The user compared it against
+  the original apk on an HP 10 G2 Tablet (MT8127 / Mali-450 / Android 5.0.1) and rated the speed
+  equal, graphics and sound right. New module:
   `apkenv/modules/mortar.c` (Mortar 1.8.x host generation — NOT the 1.7.x one upstream
   `modules/fruitninja.c` targets). Trail: `plan/FRUITNINJA.md`; contract table
   `plan/fruitninja-contract.txt` (regen: `apkenv/tools/fn-contract.sh`).

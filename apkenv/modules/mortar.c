@@ -33,6 +33,7 @@
 #include "../audio/audiotrack.h"
 
 #include <GLES2/gl2.h>
+#include <sys/time.h>
 #include <ctype.h>
 #include <limits.h>
 #include <stdio.h>
@@ -1271,7 +1272,25 @@ mortar_update(struct SupportModule *self)
 
     mortar_autotap_run(self);
 
+    /* Frame-rate meter. One line per 300 frames (~5-6 s), cheap enough to
+     * leave on: "it feels slow" is unanswerable without a number, and the
+     * number has to come from the same build the player is holding. */
     mortar_frames++;
+    {
+        static struct timeval t0;
+        static unsigned long mark = 0;
+        struct timeval now;
+        gettimeofday(&now, NULL);
+        if (mark == 0) { t0 = now; mark = mortar_frames; }
+        else if (mortar_frames - mark >= 300) {
+            double secs = (now.tv_sec - t0.tv_sec) + (now.tv_usec - t0.tv_usec) / 1e6;
+            fprintf(stderr, "[MORTAR-FPS] %.1f fps over %lu frames (%.1f ms/frame)\n",
+                    (mortar_frames - mark) / secs, mortar_frames - mark,
+                    secs * 1000.0 / (mortar_frames - mark));
+            t0 = now; mark = mortar_frames;
+        }
+    }
+
     if (!self->priv->native_step(ENV_M, GLOBAL_M)) {
         fprintf(stderr, "[MORTAR] step -> false at frame %lu: shutting down\n", mortar_frames);
         self->priv->want_exit = 1;

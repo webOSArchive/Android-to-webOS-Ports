@@ -1,0 +1,76 @@
+Fruit Ninja for webOS (HP TouchPad) — an apkenv port
+====================================================
+
+This is the Android build of Halfbrick's **Fruit Ninja** (1.8.8, the free
+edition) running *natively* on webOS. There is no ACL (OpenMobile's full
+Android runtime) and no Dalvik: apkenv is a slim shim — a gingerbread bionic
+linker loaded as a library, a fake-JNI layer, a webOS SDL/PDL backend, and a
+per-game module that plays the part of the game's Android Java host.
+
+Fruit Ninja's engine is Halfbrick **Mortar** (lib/armeabi/libmortargame.so). It
+renders through its own GLES2 device and mixes its own audio; the module
+(apkenv/modules/mortar.c) answers the Java contract around it — file manager,
+device properties, preferences, the KeyStore save file, dialogs, and the
+AudioTrack sink the engine pushes its mix into.
+
+WHAT WORKS
+----------
+  Full-screen landscape 1024x768, the game's own ES2 renderer.
+  Menus, mode select, Classic / Arcade / Zen, slicing, scoring, bombs.
+  Sound and music (44100 Hz stereo, the engine's own mixer).
+  Saves and settings persist across restarts and reinstalls.
+
+WHAT IS MISSING, AND WHY
+------------------------
+  Anything that needs a network or a Google account: ads, in-app purchase,
+  leaderboards, the YouTube trailer on the first-run screen, push
+  notifications. The shim reports the device as offline, which is a state the
+  game already handles — it shows its own "no connection" screens. The engine
+  still retries its ad-media downloads in the background; they fail harmlessly.
+
+  Multiplayer (it is same-device "VS", and untested here).
+
+LAYOUT OF THIS APP DIRECTORY
+----------------------------
+  apkenv            The host binary (native ARM ELF). On launch it self-locates
+                    (/proc/self/exe), cd's here, picks the game under android/,
+                    and runs it.
+  appinfo.json      webOS app manifest (type:pdk, main:apkenv).
+  icon.png          Launcher icon.
+  README            This file.
+
+  libs/webos/       webOS-side host libraries, loaded by apkenv's OWN userspace
+                    linker: harvested Android 2.3 (gingerbread) bionic
+                    libc/libm/libstdc++/liblog/libz — the runtime the game's
+                    native code was built against — plus the TouchPad's own
+                    libEGL.so.
+
+  android/          The Android bits. fruitninja.apk is shipped whole: apkenv
+                    reads the engine's native .so and all 87 MB of game assets
+                    straight out of it at runtime, through the engine's own zip
+                    reader. apkenv.env holds launch settings (see below).
+
+RUNTIME-WRITABLE DATA (the app directory is read-only at runtime)
+-----------------------------------------------------------------
+  /media/internal/.apkenv/fruitninja.apk/   saves (KeyStore.dat), preferences,
+                                            cache, and the apk's extracted
+                                            native libs.
+  /media/internal/apkenv-com.apkenv.fruitninja.log
+                                            this app's stdout/stderr — a jailed
+                                            PDK app's stdio goes nowhere else.
+                                            Rewritten on every launch.
+
+LAUNCH SETTINGS (android/apkenv.env)
+------------------------------------
+  APKENV_MORTAR_DIALOG_BUTTON=0   How to answer a dialog the shim cannot draw.
+                                  0 = the negative button, 1 = positive,
+                                  -1 = leave it unanswered. 0 is correct here:
+                                  the dialog this build raises is the quit
+                                  confirmation, and 1 would quit the game.
+
+SOURCE AND NOTES
+----------------
+  Module:  apkenv/modules/mortar.c
+  Trail:   plan/FRUITNINJA.md  (what broke, and what the fixes were)
+  Contract: plan/fruitninja-contract.txt  (the engine->Java surface)
+  Method:  PORTING-PLAYBOOK.md, android-port-shim.md

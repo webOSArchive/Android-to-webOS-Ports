@@ -261,21 +261,35 @@ without a person in the room. Diagnostic only — never in a shipped env file.
   keeps the engine from waiting on them; it still issues one ad-media `GET` a second forever, each
   failing after ~1 s, which is what an offline Android device does too.
 
-## 8. Open — needs a person with the device
+## 8. Confirmed by the operator, and what is still open
 
-1. **Real finger touch.** Every touch so far was synthetic. The path is the same one SDL feeds, and
-   the package is launched from its icon (which is what makes SDL deliver input at all — playbook
-   §4), but `ev_total=1` in all ten runs because nobody touched the panel. *Expected to work; not
-   yet observed.*
-2. **Does it actually sound right?** The pump is provably fed and drained in real time with zero
-   underruns, which rules out silence-by-starvation — but audible, correct-pitch music and SFX are
-   an ears question.
-3. **Multi-finger slicing.** The module maps a second finger to
+**Confirmed on the panel (2026-09-15):** graphics and sound are right, real touch works, and the
+speed matches the original apk running on an HP 10 G2 Tablet (MT8127, Mali-450, Android 5.0.1) —
+installed side by side for the comparison. The `[MORTAR-FPS]` meter agrees: **59.2 fps** steady,
+i.e. vsync-locked 60, with the first 300 frames at ~39 fps because that window is asset loading.
+
+**Mode sweep (synthetic input + `grab.sh`), all reached and running:** main menu, mode select,
+**Classic**, **Arcade** ("GO!!", 60-second timer), **Zen**, **Dojo** (Gutsu's Cart / Sensei's Swag),
+**Extras** (Social / Rewards / About), **Multiplayer** setup (Classic Attack / Zen Duel, game speed
+and time selectors), the in-game HUD and pause button, and the **end-of-game results screen**
+(Score / Starfruit / Sensei's Fruit Fact / Gutsu's Cart / Retry / Quit). High scores persist — a
+later game showed `BEST: 6` from an earlier one.
+
+*Note for anyone driving this with `APKENV_MORTAR_AUTOTAP`: the menu rings drift, so a fixed
+coordinate lands on a different item run to run. Fire a short burst of slices across the target
+rather than one exact swipe.*
+
+Still open:
+
+1. **Multi-finger slicing.** The module maps a second finger to
    `ACTION_POINTER_DOWN | index<<8`, faithfully to `MultiTouchInputHandler`, but only single-finger
    input has been exercised.
-4. **Feel and frame rate.** ~45 fps by the SDL heartbeat over 45 s; whether it *plays* well is a
-   judgement call.
-5. **The other modes** (Arcade, Zen, Dojo, Extras) and a full Classic game to the results screen.
+2. **Multiplayer** is same-device VS; the setup screen works, a match was not played.
+3. **Long-session behaviour.** The longest run was ~90 s. The engine allocates a new `HttpClient`
+   per ad-media request (~1/s) and the module frees it on `FinishedCopyingDataJNI`, but that has not
+   been watched over an hour.
+4. **Memory headroom.** 76 MB RSS / 268 MB VmSize at the menu, against `requiredMemory: 250` in
+   `appinfo.json` and ~490 MB free on the device. Not measured deep into gameplay.
 
 ## 9. Test protocol (one change per run)
 
