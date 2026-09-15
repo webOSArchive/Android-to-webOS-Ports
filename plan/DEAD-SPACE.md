@@ -3,8 +3,11 @@
 Target: **`android-candidates/Dead-Space.apk`** — `com.eamobile.deadspace_full_azn` 1.2.0
 (versionCode 1200), the **Amazon Appstore** build, dated 2013-10-22. 296 MB.
 
-Status: **triage + host contract done, no device work yet.** Started 2026-09-15 evening following
-`PORTING-PLAYBOOK.md` §1–§2. Everything below is static analysis; nothing here has been run.
+Status: **module written, package built, nothing run yet.** 2026-09-15 evening, following
+`PORTING-PLAYBOOK.md` §1–§2. Everything below is static analysis —
+`apkenv/modules/eablast.c` compiles and
+`apkenv/packaging/out/com.apkenv.deadspace_1.0.0_all.ipk` (174 MB) is ready to install, but **no
+part of this has executed on a device.** Treat every claim as a derivation, not an observation.
 
 ## 1. Triage
 
@@ -120,9 +123,34 @@ Two options, and the choice matters because 319 MB is not something to copy twic
    §5) only if the engine insists on one writable root for both. That is a first-run copy of 319 MB
    file-by-file through `copy_tree` onto FAT — minutes, and it doubles the space used.
 
-**Open, and the first thing to settle tomorrow:** which delegate feeds the `published/` prefix.
-Disassemble around the `published/sounds/soundBase.sb` literal's xref and see what it is
-concatenated with.
+**Settled, by covering both cases instead of answering the question.** The xref hunt was a dead end:
+the engine is PIC, so the string address is a PC-relative delta rather than a stored pointer, and a
+delta scan over the whole binary returns 1188 candidate sites — too noisy to be worth refining
+(`tools/` has no xref helper for this; the naive absolute-pointer search in the Fruit Ninja notes
+only works for `.data.rel.ro` pointers). So the module does both:
+
+- **`chdir()` into the content root** in `init()` — covers the engine using the paths bare.
+- **answers `GetExternalStorageDirectory()` with that root's absolute path** — covers it prefixing.
+
+`chdir` is safe at that point: the bionic libs (`APKENV_LOCAL_BIONIC_PATH="./libs/webos/"`) and the
+engine `.so` are loaded before any module `init()` runs, and the packaged log was opened by absolute
+path. Override the root with `APKENV_BLAST_CONTENT`.
+
+### Packaging: strip the apk, ship the content, copy nothing
+
+Bundling the apk whole *and* the extracted tree would be a ~615 MB package, over half of it dead
+weight — and `DATA=` would additionally make apkenv seed 319 MB into `/media/internal` on first
+launch. Neither is necessary, because the content only needs to be *readable*:
+
+| | |
+|---|---|
+| `APK=` | **stripped apk**, 2.6 MB — `lib/` + `AndroidManifest.xml` + `resources.arsc` + `res/`. apkenv needs it only to find and load the engine `.so`, name the app, and let `build-ipk.sh` pull the launcher icon. |
+| `EXTRAS=` | `assets/published/` as a real tree at `android/extras/published/`, **read in place**. `EXTRAS` (not `DATA`) precisely because it does no first-run seeding. |
+
+Built by `apkenv/tools/ds-stage.sh`, which verifies the staged tree matches the apk's file count and
+byte total exactly and that the engine `.so` survived the strip — a short content tree is a game
+that boots and then cannot find a level, which is expensive to debug on the device. Result:
+**174 MB `.ipk`** (gzip does well on the content), against ~615 MB for the naive approach.
 
 ## 4. Ranked risks
 
@@ -153,21 +181,61 @@ the *Activity* lifecycle, and we never run Java — the module drives the native
 entitlement check never executes. The `kiwi` file and `com.amazon.content.id.*` markers are inert
 for us.
 
-## 5. Plan for the next session
+## 5. Done so far, and the first device run
 
-1. Settle §3: disassemble the `published/sounds/soundBase.sb` xref, learn the path root, and decide
-   ship-in-place vs `DATA=` seeding.
-2. `modules/eablast.c` — name it for the **engine**, not the game (`com.ea.blast` is shared across
-   EA's Android ports of this era, so the module should carry over). Call `JNI_OnLoad` first
-   (playbook §2), then `EAThread_Init` → `rwfilesystem_Startup` → `EAIO_Startup` → `NativeOnCreate`
-   → surface created/changed → per-frame `NativeOnDrawFrame`. Ship the unhandled-call tracer and a
-   log line per contract point before the first run.
-3. Answer the constant getters (`NativeGetIdRawPointer*`) and feed `NativeOnPointerEvent` the values
-   the engine gave, not Android's.
-4. `APKENV_PTHREAD_STACK_CLAMP=1` on from run one.
-5. Package with `DATA=`/`EXTRAS=` as §3 decides; `requiredMemory` set from a measured RSS.
-6. Copy the synthetic-input hook (`APKENV_MORTAR_AUTOTAP`, `modules/mortar.c`) into the new module —
-   it is engine-independent and it is what made Fruit Ninja's menus testable without a person.
+Written and building, none of it executed:
+
+- `apkenv/modules/eablast.c` — named for the **engine**, since `com.ea.blast` is shared across EA's
+  Android ports of this era. Boot order from the callers: `JNI_OnLoad` → `EAThread_Init` →
+  `rwfilesystem_Startup` → `EAIO_Startup` → `NativeOnCreate` → `NativeOnSurfaceCreated` →
+  `NativeOnSurfaceChanged(w,h)` → fetch the engine's pointer constants → audio → per-frame
+  `NativeOnDrawFrame`. Always-on unhandled-call tracer, a log line per contract point, an audio
+  meter and an fps meter.
+- `apkenv/tools/ds-stage.sh`, `apkenv/packaging/deadspace/{appinfo.json,apkenv.env}`, and the
+  174 MB `.ipk`.
+
+### First run (a ~174 MB install, so make it count)
+
+```
+APPID=com.apkenv.deadspace WAIT=60 INSTALL_TIMEOUT=1800 apkenv/tools/tr2-run.sh ds-01
+apkenv/tools/grab.sh ds-01
+```
+
+Expected, in order:
+
+```
+[BLAST] try_init: found 25/25 natives (EA BLAST host)
+[BLAST] content root: .../android/extras (chdir ok)
+[BLAST] JNI_OnLoad
+[BLAST] EAThread_Init / rwfilesystem_Startup / EAIO_Startup
+[BLAST] NativeOnCreate
+[BLAST] NativeOnSurfaceCreated / NativeOnSurfaceChanged(1024, 768)
+[BLAST] pointer ids: down=.. up=.. move=.. cancel=.. undefined=.. touchscreen module=..
+[BLAST-AUDIO] AudioTrack 44100/2 open
+[BLAST] first NativeOnDrawFrame returned
+[BLAST-FPS] ... fps
+```
+
+| symptom | first thing to read |
+|---|---|
+| no `first NativeOnDrawFrame` | the last `[BLAST]` line names the boot step that hung |
+| `chdir ok` missing | `APKENV_BLAST_CONTENT` is wrong; the engine will find no content |
+| pointer ids all 0 | the constant getters did not resolve — check `[BLAST] try_init` found 25/25 |
+| dies early, no clue | memory (risk 1) — check `requiredMemory`, and watch for `NativeOnLowMemory` |
+| runs, silent | `[BLAST-AUDIO]`: no `write` traffic ⇒ suspect the pthread stack clamp / a missing thread |
+| `[BLAST-JNI] UNHANDLED` | a contract gap; the tracer names it with its signature |
+
+### Still to do
+
+1. **`requiredMemory` is a guess (400).** Set it from a measured RSS after the first run that gets
+   far enough to have one.
+2. Copy the synthetic-input hook (`APKENV_MORTAR_AUTOTAP`, `modules/mortar.c`) across — it is
+   engine-independent and it is what made Fruit Ninja testable without a person. Left out of the
+   first build deliberately: it is worth nothing until the game draws a frame.
+3. `runEntryPoint` is unwired and unexplained (risk 3). If the first run boots but nothing happens,
+   this is the first suspect — it is the same shape as Fruit Ninja's `native_threadEntry`.
+4. Orientation: the module assumes landscape and sets no rotation. Confirm against the engine's
+   `Get/SetStdOrientation` traffic in the log rather than by eye.
 
 **Reference device:** the HP 10 G2 Tablet (MT8127, Android 5.0.1) is on hand. Dead Space needs
 `armeabi`, which it runs, so the original apk can be installed there for a side-by-side — the
