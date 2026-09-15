@@ -347,3 +347,27 @@ missing/failed content path (nothing is opened, and nothing *fails* to open); a 
 4. The package still needs rebuilding from the fixed `ds-stage.sh` — the device was restructured
    in place to test, so the shipped `.ipk` does not yet have the corrected layout.
 5. Gameplay proper is untouched: nothing past the intro has been tried.
+
+## 7. Aspect ratio: what the engine actually does (measured, ds-proj2)
+
+The operator's read was right: **the 3D adapts and only the UI is hard-coded.** Measured off the
+engine's own projection matrices (`APKENV_GL_DEBUG` -> `[GLPROJ]`, which logs `glLoadMatrixf` when
+the matrix mode is `GL_PROJECTION` — this engine never calls `glFrustumf`, it builds its own):
+
+| surface | perspective m[0] / m[5] | horizontal FOV | vertical FOV |
+|---|---|---|---|
+| 1024x768 (4:3) | 1.99270 / 2.65694 | 53.4° | **41.3°** |
+| 1024x640 (16:10) | 2.02061 / 3.23297 | 52.7° | **34.4°** |
+
+Horizontal FOV is constant to within 1%; vertical follows the aspect. **A taller surface sees more
+of the scene**, so letterboxing costs real field of view in play — it is not a free fix.
+
+The UI is the opposite. Its ortho projection is a **fixed 320 units tall**, width `320 * aspect`:
+426 units at 4:3, 512 at 16:10. Elements positioned for the wider design therefore collide at 4:3,
+which is exactly the observed "Options" running into "Extras".
+
+**Shipping 3:2** (`APKENV_BLAST_LOGICAL=1500x1000` -> 1024x682, 43px bars) as the compromise: the
+menu lays out correctly and most of the vertical FOV that 16:10 would cost is given back. Removing
+the line gives full 1024x768 and maximum view at the price of an overlapping menu — worth knowing
+that 4:3 shows *more* than the game was framed for, so "more visible" is not automatically "more
+correct" for authored cutscenes.

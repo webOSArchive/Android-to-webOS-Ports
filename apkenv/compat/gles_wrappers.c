@@ -437,7 +437,18 @@ my_glFogfv(GLenum pname, const GLfloat *params)
 void
 my_glFrustumf(GLfloat left, GLfloat right, GLfloat bottom, GLfloat top, GLfloat zNear, GLfloat zFar)
 {
-    WRAPPERS_DEBUG_PRINTF("glFrustumf()\n", left, right, bottom, top, zNear, zFar);
+    /* APKENV_GL_DEBUG: the projection an engine builds answers "does the 3D
+     * adapt to the surface aspect, or is it just squashed?" - which decides
+     * whether letterboxing a wrong-aspect game costs real field of view or
+     * merely fixes it. Constant left/right with changing bottom/top means the
+     * engine holds horizontal FOV and adapts vertical (a taller surface SEES
+     * MORE); both changing in proportion means it is fitting a fixed view. */
+    static int n;
+    if (n++ < 8 && getenv("APKENV_GL_DEBUG") != NULL)
+        fprintf(stderr, "[GLPROJ] glFrustumf l=%.4f r=%.4f b=%.4f t=%.4f n=%.4f f=%.1f "
+                "(w=%.4f h=%.4f aspect=%.4f)\n", left, right, bottom, top, zNear, zFar,
+                right - left, top - bottom,
+                (top - bottom) != 0.0f ? (right - left) / (top - bottom) : 0.0f);
     functions.glFrustumf(left, right, bottom, top, zNear, zFar);
 }
 void
@@ -509,6 +520,24 @@ my_glLineWidth(GLfloat width)
 void
 my_glLoadMatrixf(const GLfloat *m)
 {
+    /* APKENV_GL_DEBUG: this engine builds its own matrices and never calls
+     * glFrustumf, so the projection has to be read here. For a perspective
+     * matrix m[0] = 2n/(r-l) and m[5] = 2n/(t-b), so comparing the pair across
+     * two surface aspects says which axis the engine holds fixed - i.e.
+     * whether a taller surface SEES MORE or merely stretches what it had. */
+    if (matrix_mode == GL_PROJECTION && m != NULL) {
+        static int n_ortho, n_persp;
+        int persp = (m[11] != 0.0f);   /* perspective divide -> m[11] == -1 */
+        int *cnt = persp ? &n_persp : &n_ortho;
+        if ((*cnt)++ < 4 && getenv("APKENV_GL_DEBUG") != NULL)
+            fprintf(stderr, "[GLPROJ] %s m[0]=%.5f m[5]=%.5f m[10]=%.5f m[11]=%.1f "
+                    "-> extent w=%.1f h=%.1f ratio=%.4f\n",
+                    persp ? "PERSPECTIVE" : "ortho      ",
+                    m[0], m[5], m[10], m[11],
+                    m[0] != 0.0f ? 2.0f / m[0] : 0.0f,
+                    m[5] != 0.0f ? 2.0f / (m[5] < 0 ? -m[5] : m[5]) : 0.0f,
+                    (m[0] != 0.0f && m[5] != 0.0f) ? (m[5] < 0 ? -m[5] : m[5]) / m[0] : 0.0f);
+    }
     WRAPPERS_DEBUG_PRINTF("glLoadMatrixf()\n", m);
     if(matrix_mode == GL_PROJECTION && global.platform->get_orientation() != global_module_hacks.current_orientation) {
         WRAPPERS_DEBUG_PRINTF("glLoadMatrixf rotation hack\n");
