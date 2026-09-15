@@ -58,7 +58,13 @@ the runtime for game behaviour is a dead end (we did it for a week).
    ship a second `.so` with a `JNI_OnLoad` of its own.
 6. **Split the contract by modifier.** A contract row declared `native` in the smali is an engine
    **callback**, not a host service: answer it by calling the engine's own registered function
-   (`jnienv_find_native_method(class, name)`), never by inventing a return value. Scope the name
+   (`jnienv_find_native_method(class, name)`), never by inventing a return value.
+   **A `native` Java method with NO caller anywhere in the dex is the tell for a JNI round-trip**:
+   the engine calls its own Java static purely to re-enter native code (to attach a thread to the
+   VM, or to pick up a Java-side object on the way). Both ports hit it — Fruit Ninja's
+   `native_threadEntry`, Dead Space's `EAIO.Startup`/`rwfilesystem.Startup` — and in both the first
+   reading was "dead code". `grep -rl <name>` finding only the declaration means **answer it**, not
+   ignore it. Scope the name
    scan to the game's own Java packages — a modern apk bundles half a dozen ad/analytics SDKs whose
    `init`/`start`/`read`/`close` collide with unrelated strings and bury the real contract
    (189 useful rows vs 955; `apkenv/tools/fn-contract.sh` does this for a Mortar apk).
@@ -78,6 +84,20 @@ then at 100/10k/1M. With that in place, the *next* gap names itself in the devic
 presenting as a freeze. Add one log line per implemented contract point (`[OSREADSTRING]`,
 `[MARM-AUDIO] audioPlay '<path>' -> rc`, `[MARM-SOUND] soundInit …`, `[MARM-LB] …`) so a test
 run answers "did the fix fire, and what came next" without a second round-trip.
+
+**A probe must cover every path the engine can take, or its negative result is a lie.**
+`APKENV_TRACE_FILES` traced only `fopen`/`open`. Dead Space's engine **probes with `stat`/`opendir`
+first** (it imports `stat`, `opendir`, `readdir`, `chdir`, `getcwd`), so when its content path was
+wrong the trace said *"the engine opens no content file at all"* — true, and completely misleading:
+it was looking, failing, and never reaching `open()`. That false negative sent a whole run into a
+GL theory. `stat`/`opendir` are traced under the same flag now. Before believing "the engine never
+asks for X", check which call it would ask *with*.
+
+**apkenv's crash dump `on stack 0x...` lines are a stack SCAN, not a backtrace.** They list
+everything on the stack that looks like a code address, including long-dead frames. Reading Adreno
+entries there as "it is inside GL right now" is how a Dead Space crash got attributed to the
+renderer when it was a missing asset. `pc` is real; `lr` may be garbage (it read `0x17c` once); the
+scan is a hint list, nothing more.
 
 Prepare the test as a protocol: one change, what line to expect, what the user should see, what
 the fallback signal is if it fails. The person holding the device is the scarce resource.
@@ -225,6 +245,24 @@ geometry draws untextured. `compat/etc1.c` decodes it on the CPU (unit test:
 `tools/etc1test.c`). Note ETC1 carries **no alpha**; Unity splits alpha into a second ETC1
 texture, so an RGB-only upload is not the whole story for anything blended.
 
+**Does the game adapt to the surface aspect? Measure it, do not argue about it.** A wrong-aspect
+game usually splits: the **3D adapts and the 2D UI does not**. Dead Space on 4:3 overlapped its menu
+buttons while playing fine. Log the projection (`APKENV_GL_DEBUG` → `[GLPROJ]` in
+`compat/gles_wrappers.c`, which hooks `glLoadMatrixf` when `matrix_mode == GL_PROJECTION`, because
+plenty of engines build their own matrices and never call `glFrustumf`) and run the same scene at
+two aspects:
+- **perspective** `m[0] = 1/(aspect·tan(fovy/2))`, `m[5] = 1/tan(fovy/2)`. Constant `m[0]` with
+  changing `m[5]` = horizontal FOV held, vertical follows the surface, so **a taller surface really
+  sees more and letterboxing costs field of view**. (Dead Space: hFOV 53.4° both ways, vFOV 41.3°
+  at 4:3 vs 34.4° at 16:10.)
+- **ortho** gives the UI's design space directly — Dead Space's is a fixed **320 units tall**,
+  `320·aspect` wide, so elements placed for the wider design collide at 4:3. That is the whole bug,
+  and it says exactly how much width the UI needs.
+Then letterbox to the *narrowest* aspect the UI tolerates rather than the game's nominal one
+(3:2 not 16:10, here), so the 3D keeps what it can. And note the argument the other way: a taller
+surface shows **more than the game was framed for**, which is not automatically better — though a
+game that letterboxes its own cutscenes has already answered that.
+
 **Display.** Landscape-native TouchPad (1024x768). Portrait games: render-to-FBO + one rotated
 blit (WMW). Wrong aspect (PvZ ships only 1280x800 assets): `APKENV_MARM_LOGICAL=WxH` reports a
 centered surface of that aspect; generic `module_hacks.viewport_offset_{x,y}` shifts every
@@ -284,6 +322,19 @@ Memory: PvZ needs ~450 MB free; `requiredMemory` in `appinfo.json` makes webOS r
   failed`), and a script that carries on launches the **old binary with the new env** — a wasted run
   (Aralon A8). Kill until `pidof apkenv` is empty, push, and **refuse to launch unless the md5 on the
   device matches** the local build.
+- **When the engine cannot read assets out of the apk, do not ship the apk twice.** Dead Space's
+  BLAST engine opens content with plain `fopen`/`mmap` and has no zip reader and no
+  `AAssetManager`, so its 319 MB has to be real files. Bundling the whole apk *and* the extracted
+  tree is a ~615 MB package, over half dead weight. Instead **strip the apk** to
+  `lib/ + AndroidManifest.xml + resources.arsc + res/` (2.6 MB — apkenv only needs it to load the
+  engine, name the app and yield an icon) and ship the content tree with **`EXTRAS=`, not `DATA=`**:
+  `DATA=` seeds a first-run copy into `/media/internal`, `EXTRAS=` lands it in the app dir to be
+  read in place. 174 MB, nothing duplicated. Give the staging step a script that verifies the staged
+  tree matches the apk's **file count and byte total** — a short content tree is a game that boots
+  and then cannot find a level.
+- **The path the engine composes may not contain the apk's package name.** Dead Space builds
+  `<GetExternalStorageDirectory()>/Android/data/**com.ea.deadspace**/files/published/...` while the
+  apk is `com.eamobile.deadspace_full_azn`. Read the path off a `stat` trace; do not derive it.
 - **Big packages:** a 291 MB `.ipk` (Aralon, OBB inside) spends ~5 min in the USB copy and ~3 more
   while the device unpacks it. An install timeout shorter than that launches a half-installed app
   (`tools/tr2-run.sh` takes `INSTALL_TIMEOUT`, default 1800 s).
@@ -380,7 +431,9 @@ TouchPad — and the remaining work went straight back to being ordinary Java-co
 - [ ] **Effects but no music** → thread creation first (`APKENV_PTHREAD_STACK_CLAMP=1`), then the
       audio path. "Is X supposed to be here?" → play the original apk on a real Android device.
 - [ ] Visual claims come from `tools/grab.sh`, never the on-device screenshot.
-- [ ] Ship check: unpack the final `.ipk` and **look at `icon.png`** — `build-ipk.sh` used to pick
+- [ ] Ship check: unpack the final `.ipk` and **look at `icon.png`** — and note that
+      `build-ipk.sh`'s explicit `ICON=` branch **copies without resizing** (the auto-detect branch
+      resizes to 64x64), so pass an already-downscaled file, not the source art — `build-ipk.sh` used to pick
       it non-deterministically (`find | head -1`), so a rebuild could silently swap which artwork
       shipped; Fruit Ninja carried the paid icon while its manifest declared the free one. It now
       asks `aapt` for the manifest's icon and prints what it used — read that line. Then read its
@@ -542,3 +595,29 @@ looks complete** — especially then, because that is when you will not go looki
 exits instantly, and dialogs that could never have been answered were all the same missing
 `JNI_OnLoad`. Before theorising separately about an audio path and a threading bug, check whether
 one unbound mechanism explains both.
+
+---
+
+## Lessons from Dead Space (EA Mobile BLAST), 2026-09-15
+
+Full trail: `plan/DEAD-SPACE.md`. Triage to a released, playable 174 MB `.ipk` in one evening. The
+specifics are folded into §2–§5 above; three things are worth stating on their own because each one
+cost a device run or sent the work sideways.
+
+**The most expensive thing was a confident negative from an incomplete probe.** "The engine opens no
+content file at all" was *true* and led straight to a GL theory with no basis, because the tracer
+watched `fopen`/`open` and the engine probes with `stat`/`opendir`. A negative result is the weakest
+evidence an instrument can give; verify the instrument covers the path before you believe it.
+
+**Two ports, two transposed-argument bugs, both invisible from the outside.** Temple Run 2's
+`nativeInit(II)` was `(glesMode, splashMode)`; Dead Space's `AndroidEAAudioCore.Init(AudioTrack,III)`
+is `(track, framesPerBuffer, channels, sampleRate)` — rate last. The second one produced "chirpy,
+stuttering audio" *and* 2.9 MB of ring underrun, which read as two separate problems. Neither looks
+like "wrong argument". **Read the caller for every argument, every time** — the Dead Space caller
+computes `bufsize / (sizeofShort * channels)` on the line above the call.
+
+**The operator's observations are data, and the imprecise ones are often the most valuable.**
+"Chirpy" (not just "stuttering") is what distinguished a rate bug from starvation. "In-game looked
+fine without letterboxing" is what prompted measuring the projection and finding that the 3D adapts
+while only the UI is hard-coded — which turned a blunt 16:10 letterbox into a 3:2 one that keeps
+most of the field of view. Neither would have come from the logs.
