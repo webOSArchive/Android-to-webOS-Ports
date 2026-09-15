@@ -200,7 +200,13 @@ empty strings where the game re-prompts.
   `/sdcard/Android/obb/<pkg>/`) with `adb`, play the same stretch, and diff: `logcat` (Unity's own
   messages), `/proc/<pid>/task/*/{comm,stat}` for thread names and CPU (readable without root), and the
   AudioTrack setup lines. It turned "should there be music here?" into a fact, and showed the one
-  missing thread.
+  missing thread. It also settles "does this feel slow?", which nobody can answer from memory —
+  a same-era tablet side by side did it for Fruit Ninja in minutes. Drive it with
+  `adb shell input swipe x1 y1 x2 y2 <ms>` (the `APKENV_MORTAR_AUTOTAP` idea, for free), and for a
+  number rather than an impression use `dumpsys SurfaceFlinger --latency "<layer>"` — the layer name
+  comes from `--list`, and column 2 of each row is the vsync the frame was actually presented at, so
+  the deltas are frame times. `dumpsys gfxinfo` will NOT work for these games: it measures the UI
+  toolkit, and an NDK game draws to its own GLSurfaceView.
 
 **GL wrappers: never register two tables that share names.** `gles_mapping.h` and
 `gles2_mapping.h` share **68** symbols (`glClear`, `glDrawArrays`, `glViewport`,
@@ -258,6 +264,15 @@ Memory: PvZ needs ~450 MB free; `requiredMemory` in `appinfo.json` makes webOS r
   **(4)** `novacom: unexpected EOF from server` is how novacom reports a remote **non-zero exit**
   (`pidof` finding nothing, `ls` of a missing file), not a dead link — `novacom -l` tells the two
   apart.
+  **(5)** `kill -9` (which every iteration script uses, because `killall` does not reliably take)
+  **leaves the app's PDK jail bind-mounts behind** — webOS only tears them down on a clean exit.
+  They accumulate: after ~15 cycles the device had 22 of them and `/media/internal` had come
+  unmounted entirely (`store-media` present in `/dev/mapper`, absent from `/proc/mounts`). That
+  surfaces as `palm-install` failing with `novacom error ... file open failed` on
+  `/media/internal/.developer`, which reads exactly like a corrupt package. Before blaming the
+  `.ipk`: `grep -c palm/jail /proc/mounts` and check `df` for `/media/internal`. A reboot clears
+  both. Symptom to watch for earlier: `ls` of the app dir returning
+  `Resource temporarily unavailable` (cryptofs is backed by the media partition).
 - **Binary-only iterations on an installed app:** `novacom put` the new `apkenv` into
   `/media/cryptofs/apps/usr/palm/applications/<appid>/` and `palm-launch`; rebuild the package only
   when the env or assets change. A put over a binary a live process still holds fails (`file open
@@ -360,7 +375,11 @@ TouchPad — and the remaining work went straight back to being ordinary Java-co
 - [ ] **Effects but no music** → thread creation first (`APKENV_PTHREAD_STACK_CLAMP=1`), then the
       audio path. "Is X supposed to be here?" → play the original apk on a real Android device.
 - [ ] Visual claims come from `tools/grab.sh`, never the on-device screenshot.
-- [ ] Ship check: unpack the final `.ipk` and read its `apkenv.env` — no debug/instrumentation vars;
+- [ ] Ship check: unpack the final `.ipk` and **look at `icon.png`** — `build-ipk.sh` used to pick
+      it non-deterministically (`find | head -1`), so a rebuild could silently swap which artwork
+      shipped; Fruit Ninja carried the paid icon while its manifest declared the free one. It now
+      asks `aapt` for the manifest's icon and prints what it used — read that line. Then read its
+      `apkenv.env` — no debug/instrumentation vars;
       install it so the device runs what ships; clear `apkenv-snap-*.ppm`/`apkenv-grab.ppm` debris.
 - [ ] **Fresh-install check before calling it released:** uninstall (`palm-install -r`), move the save
       dir aside, install, verify the installed binary's md5 and env on the device, launch on the fresh
