@@ -1,0 +1,53 @@
+ea/blast/DisplayAndroidDelegate          GetDefaultHeight                           ()I                            public
+ea/blast/DisplayAndroidDelegate          GetDefaultWidth                            ()I                            public
+ea/blast/DisplayAndroidDelegate          GetDpiX                                    ()F                            public
+ea/blast/DisplayAndroidDelegate          GetDpiY                                    ()F                            public
+ea/blast/DisplayAndroidDelegate          GetStdOrientation                          ()I                            public
+ea/blast/DisplayAndroidDelegate          SetStdOrientation                          (I)V                           public
+ea/blast/GetAppDataDirectoryDelegate     GetAppDataDirectory                        ()Ljava/lang/String;           public
+ea/blast/GetAppDataDirectoryDelegate     GetExternalStorageDirectory                ()Ljava/lang/String;           public
+ea/blast/LocationManagerAndroid          SetEnabled                                 (Z)V                           public
+ea/blast/MainActivity                    GetInstance                                ()Lcom/ea/blast/MainActivity;  public static
+ea/blast/SystemAndroidDelegate           GetAccelerometerCount                      ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetApiLevel                                ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetCameraCount                             ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetChipset                                 ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetCompassCount                            ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetDeviceModel                             ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetDeviceName                              ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetDeviceSubscriberID                      ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetDeviceUniqueId                          ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetDisplayCount                            ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetGyroscopeCount                          ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetLanguage                                ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetLocale                                  ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetLocationAvailable                       ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetManufacturer                            ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetMicrophoneCount                         ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetPhoneNumber                             ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetPhysicalKeyboardCount                   ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetPlatformRawName                         ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetPlatformStdName                         ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetPlatformVersion                         ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetProcessorArchitecture                   ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetTotalRAM                                ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetTouchPadCount                           ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetTouchScreenCount                        ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetTrackBallCount                          ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetVibratorCount                           ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           GetVirtualKeyboardCount                    ()Ljava/lang/String;           public
+ea/blast/SystemAndroidDelegate           IntentView                                 (Ljava/lang/String;)Z          public
+ea/blast/SystemAndroidDelegate           IsBatteryStateAvailable                    ()Ljava/lang/String;           public
+ea/blast/TouchSurfaceAndroid             IsTouchScreenMultiTouch                    ()Z                            public static
+ea/blast/VirtualKeyboardAndroidDelegate  Shutdown                                   ()V                            public
+ea/EAAudioCore/AndroidEAAudioCore        Shutdown                                   ()V                            public static
+ea/EAAudioCore/AndroidEAAudioCore        Startup                                    ()V                            public static
+ea/EAIO/EAIO                             Shutdown                                   ()V                            public static native
+ea/EAIO/EAIO                             Startup                                    (Landroid/content/res/AssetManager;)V public static native
+eamobile/download/DownloadFileData       getVersion                                 ()Ljava/lang/String;           public
+eamobile/Query                           getTotalMemory                             ()J                            public static
+eamobile/Query                           getVersion                                 ()Ljava/lang/String;           public static
+eamobile/Query                           isContentReady                             ()Z                            public static
+eamobile/Query                           saveImage                                  (Ljava/lang/String;[III)V      public static
+ea/rwfilesystem/rwfilesystem             Shutdown                                   ()V                            public static native
+ea/rwfilesystem/rwfilesystem             Startup                                    (Landroid/content/res/AssetManager;)V public static native
