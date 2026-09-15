@@ -16,6 +16,9 @@
 *.apk
 # Built webOS packages — the .ipk BUNDLES the game apk, so it is game content too
 *.ipk
+# Expansion files, and the donor folders/archives they arrive in (OBB zips etc.)
+*.obb
+android-candidates/*/
 # Extracted / patched game engine binaries
 libwmw*.so
 libfmodex*.so
@@ -64,6 +67,9 @@ dist/
 # Logs, cores, scratch
 # ─────────────────────────────────────────────────────────────────────────────
 *.log
+*.logcat
+*.log.xz
+*.logcat.xz
 *.minicore
 core
 core.*

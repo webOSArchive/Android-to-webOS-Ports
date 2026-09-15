@@ -5,7 +5,9 @@ Donor: `android-candidates/Aralon/00757-Aralon-Sword-and-Shadow-4.53.apk` (prist
 `…obb-cache.zip`; md5 `2c1553626cb3522523c2e4e12cd03c64`). The `-mod` apk is an IAP crack only
 (prime31 IAB + `IInAppBillingService` + firstpass.dll; the IAPs are six consumable "karma" packs) —
 **not used**. Working copies: `apkenv/packaging/aralon.apk`, `apkenv/packaging/extras/aralon/`
-(both gitignored).
+(both gitignored). The extras OBB is deleted between builds to save space; regenerate it from the
+donor zip before packaging, and check the md5 above:
+`unzip -j -o android-candidates/Aralon/*obb-cache.zip '*.obb' -d apkenv/packaging/extras/aralon/`.
 
 ## Why this is mostly the Temple Run 2 stack again (static, 2026-09-14)
 
@@ -153,7 +155,7 @@ for touch (Stage B).
   decoded samples — the same split as Temple Run 2, whose streams never play under this host
   (unsolved there; worked around). To confirm with ONE run: `MONO_VERBOSE_METHOD=PlayMusic`
   (bare-name form = the proven one), plus read accounting over the `.resS` ranges.
-- **A8 (`logs/aralon-a8-live.log`) — the music code DOES run.** `MONO_VERBOSE_METHOD=Awake`
+- **A8 (`logs/aralon-a8-live.log.xz`) — the music code DOES run.** `MONO_VERBOSE_METHOD=Awake`
   (bare-name form, proven in TR2): 26 `Awake` methods compiled incl. `GUIMainMenu:Awake`,
   `ZoneInfo:Awake` (positive control) and **`ZoneMusicMgr:Awake`** (line 24718, in HouseStart,
   outdoors), and no `music clip is null` → the zone music prefab is instantiated, its clip loads and
@@ -163,7 +165,7 @@ for touch (Stage B).
   process still held the file) and the script launched anyway with the old binary + new env. Fixed
   in the procedure: kill until `pidof` is empty, push, **refuse to launch unless the device md5
   matches**. A9 repeats the read accounting with the right binary.
-- **A9 (`logs/aralon-a9-live.log`, correct binary: md5-gated push, `[READ] watching 11 range(s)`).**
+- **A9 (`logs/aralon-a9-live.log.xz`, correct binary: md5-gated push, `[READ] watching 11 range(s)`).**
   `ZoneMusicMgr:Awake` again in HouseStart; user outdoors, ambience only. Every range gets a 30-byte
   read exactly at its end = the zip local header of the NEXT entry (archive scan from
   `nativeFile(obb)`; stack `libunity+0x3857d8` is inside `nativeFile`) — not music. **Only range #8
@@ -176,7 +178,7 @@ for touch (Stage B).
   during play. **Next: reference run on a real Android tablet** (original apk + OBB, `adb logcat`
   for Unity/FMOD) to learn what plays where, then diff.
 - **ANDROID REFERENCE (HP 10 G2 Tablet, Android 5.0.1, original apk + OBB via adb;
-  `logs/aralon-android-ref.logcat`).** Music plays on the main menu, all menus, the opening cutscene,
+  `logs/aralon-android-ref.logcat.xz`).** Music plays on the main menu, all menus, the opening cutscene,
   and quietly outdoors — **all missing on the TouchPad; SFX/dialogue/ambience match.** Same startup
   log as ours after the DisplayMetrics fix (`DeviceGen: 3`, `Use touches`, `GuiText/large/`), same
   zone flow (`cut scene is valid` → `Transition to zone: ContSouthStart` — the TouchPad does this too;

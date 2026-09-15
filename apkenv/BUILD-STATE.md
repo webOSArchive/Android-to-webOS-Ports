@@ -502,7 +502,7 @@ Key libwmw offsets (link-time; runtime = +slide, slide=0x2c118000 last run):
   acceptNewFingerDown 0x1fe7bc, acceptNewFingerEntered 0x1fe7a4 (gate +0xe0),
   update 0x1fdf88 (count from catcher+0xbc); World handleTouchDown 0x2c3c84,
   handleTouchMoved 0x2c3c38, handleTouchUp 0x2c3bf4.
-Saved log: apkenv/last-wmw.log. Extracted lib: scratchpad wmwlib (per session).
+Saved log: plan/logs/wmw/last-wmw.log. Extracted lib: scratchpad wmwlib (per session).
 
 DELIVERY IS FAITHFUL TO ANDROID (confirmed 2026-06-27 via baksmali classes.dex,
 com/disney/common/WMWView.smali). onTouchEvent packed-switch: ACTION_DOWN(0)->

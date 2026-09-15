@@ -41,10 +41,11 @@ echo "== unpacking $SRC"
 unzip -oq "$SRC" -d "$WORK"
 
 mkdir -p "$OUT"
+OUT=$(cd "$OUT" && pwd)    # absolute, so the zip below works from inside $WORK
 
 echo "== stripped apk (engine + manifest + resources, no assets)"
 rm -f "$OUT/deadspace-stripped.apk"
-( cd "$WORK" && zip -q -r -X "$OLDPWD/$OUT/deadspace-stripped.apk" \
+( cd "$WORK" && zip -q -r -X "$OUT/deadspace-stripped.apk" \
       lib AndroidManifest.xml resources.arsc res )
 
 # The engine composes an ABSOLUTE content path as

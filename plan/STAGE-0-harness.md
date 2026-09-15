@@ -88,7 +88,7 @@ There is no Android contract to honor here; the deliverable is *measurement capa
 
 ### 2026-06-27 — analysis run COMPLETE; root cause found (overturns the prior belief)
 Method: static RE of `WidgetManager::{touchDown(0x1edc10), touchMoved(0x1ea99c), update(0x1ece38)}`
-from `wmw-patch/libwmw.base.so`, mined `last-wmw.log`, then ONE on-device run of a new `[WMWUPD]`
+from `wmw-patch/libwmw.base.so`, mined `plan/logs/wmw/last-wmw.log`, then ONE on-device run of a new `[WMWUPD]`
 probe (hook on `WidgetManager::update`, dumps finger-0's map state each in-level frame). No gdb.
 
 **Eliminated (proven):**

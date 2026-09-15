@@ -185,7 +185,10 @@ producing SFX (look for `[MARM-JNI] UNHANDLED` sound-related calls).
 - `packaging/build-ipk.sh` takes `DATA=` (tree) and `ENVFILE=`; PvZ inputs live in
   `packaging/pvzhd/` (`appinfo.json` with `requiredMemory: 400`, `apkenv.env`). Bundle = apk +
   extracted tree with MP3s replaced by 44100-stereo OGGs (63 MB) → 142 MB `.ipk`.
-  Build: `APPID=com.apkenv.pvzhd APK=packaging/pvzhd.apk DATA=<tree> ENVFILE=packaging/pvzhd/apkenv.env APPINFO=packaging/pvzhd/appinfo.json packaging/build-ipk.sh`;
+  Build: `APPID=com.apkenv.pvzhd APK=packaging/pvzhd.apk DATA=packaging/extras/pvzhd/data ENVFILE=packaging/pvzhd/apkenv.env APPINFO=packaging/pvzhd/appinfo.json packaging/build-ipk.sh`.
+  The tree (489 files) has no regeneration script — the OGG conversion was done by hand — so
+  `packaging/extras/pvzhd/data/` is the only copy outside the shipped `.ipk`. It was rescued from
+  `packaging/stage/` on 2026-09-15; never leave it there, `build-ipk.sh` wipes stage on every run;
   install: `palm-install` over USB (first attempt was cut off mid-copy → remove + reinstall).
 - First launch from the icon copies ~490 files (63 MB) before the game starts — expect a pause.
 - **Launcher-icon launch CONFIRMED** (2026-08-26): packaged run logged env → bundled apk → seeding 489
