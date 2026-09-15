@@ -37,6 +37,7 @@
 #include "common.h"
 #include "../audio/audiotrack.h"
 
+#include <ctype.h>
 #include <limits.h>
 #include <sys/time.h>
 #include <stdio.h>
@@ -142,8 +143,83 @@ blast_trace_unhandled(const char *kind, jmethodID method)
 /* Layout-compatible with struct dummy_jclass (name first) so GetObjectClass can
  * name it rather than hand back a sentinel. */
 struct blast_object { char *name; };
-static struct blast_object audio_track_obj = { (char *)"android/media/AudioTrack" };
+static struct blast_object audio_track_obj    = { (char *)"android/media/AudioTrack" };
+static struct blast_object asset_manager_obj  = { (char *)"android/content/res/AssetManager" };
+static struct blast_object main_activity_obj  = { (char *)"com/ea/blast/MainActivity" };
 static struct dummy_jclass asset_manager_class = { (char *)"android/content/res/AssetManager" };
+
+/* EAIO.Startup / rwfilesystem.Startup / EAThread.Init are declared `native` in
+ * Java and NOTHING in the Java host calls them — the ENGINE calls its own Java
+ * statics through JNI at frame 1, having first done
+ * MainActivity.GetInstance().getAssets(). Same shape as Fruit Ninja's
+ * native_threadEntry: a Java method that exists only to be a JNI round-trip
+ * back into native code.
+ *
+ * So the module both (a) answers those JNI calls and (b) keeps a pre-call in
+ * init() as a safety net for the case where the engine expects Java to have
+ * gone first. Guarded so whichever path fires first wins and nothing is
+ * initialised twice, and the guard logs which path it was — that is the
+ * evidence needed to drop the other one. */
+static int did_eathread_init, did_eaio_startup, did_rwfs_startup;
+
+/* ── AssetManager.open() -> java.io.InputStream ────────────────────────────
+ * The engine reads a couple of small config files through Java's AssetManager
+ * (EAMCore.ini, and it probes for the data.zip this SKU does not ship) as well
+ * as fopen()ing the big published/ tree directly. tools/ds-stage.sh strips
+ * assets/ out of the apk, so those are staged next to the content instead and
+ * served from here.
+ *
+ * Note it asks twice, once as "EAMCore.ini" and once as "eamcore.ini" — Android
+ * asset names are case-sensitive and the engine tries both, so the lookup
+ * retries lowercased rather than assuming either. */
+struct blast_stream { char *name; FILE *fp; };
+
+static jobject
+blast_asset_open(const char *name)
+{
+    char path[PATH_MAX], lower[PATH_MAX];
+    struct blast_stream *st;
+    FILE *fp;
+    size_t i;
+
+    if (name == NULL || *name == '\0')
+        return NULL;
+
+    snprintf(path, sizeof(path), "%s/assets/%s", eablast_priv.content_root, name);
+    fp = fopen(path, "rb");
+    if (fp == NULL) {
+        for (i = 0; name[i] && i < sizeof(lower) - 1; i++)
+            lower[i] = (char)tolower((unsigned char)name[i]);
+        lower[i] = '\0';
+        snprintf(path, sizeof(path), "%s/assets/%s", eablast_priv.content_root, lower);
+        fp = fopen(path, "rb");
+    }
+    if (fp == NULL)
+        return NULL;
+
+    st = malloc(sizeof(*st));
+    st->name = (char *)"java/io/InputStream";
+    st->fp = fp;
+    return (jobject)st;
+}
+
+static int
+blast_is_stream(jobject obj)
+{
+    struct blast_object *o = (struct blast_object *)obj;
+    return obj != NULL && o->name != NULL && strcmp(o->name, "java/io/InputStream") == 0;
+}
+
+static void
+blast_once(int *flag, const char *what, const char *who)
+{
+    if (*flag) {
+        fprintf(stderr, "[BLAST] %s already done (%s asked again)\n", what, who);
+        return;
+    }
+    *flag = 1;
+    fprintf(stderr, "[BLAST] %s (via %s)\n", what, who);
+}
 
 static AudioTrack *audio_track = NULL;
 static unsigned long audio_writes = 0, audio_bytes = 0;
@@ -211,9 +287,36 @@ blast_GetObjectClass(JNIEnv *env, jobject obj)
     return c;
 }
 
-static jthrowable blast_ExceptionOccurred(JNIEnv *env) { return NULL; }
-static void       blast_ExceptionClear(JNIEnv *env) { }
-static jboolean   blast_ExceptionCheck(JNIEnv *env) { return JNI_FALSE; }
+/* A failed AssetManager.open() THROWS IOException on Android; it does not
+ * return null. The engine probes for a data.zip this SKU does not ship, and
+ * with no exception pending it believed it had a stream, carried on, and died
+ * on a NULL inside the M3G loader (ds-04: `ldr r1,[r3]` with r3=0 under
+ * m3g::Object3D::getUserData) — having opened no content file at all, which is
+ * what says the failure is before loading rather than during it.
+ *
+ * This is the playbook's "an unimplemented host method that returns a value the
+ * engine acts on is not a no-op", in its exception-shaped form: the absence of
+ * a throw is itself a wrong answer. */
+static struct blast_object io_exception_obj = { (char *)"java/io/IOException" };
+static int blast_pending_exception = 0;
+
+static jthrowable
+blast_ExceptionOccurred(JNIEnv *env)
+{
+    return blast_pending_exception ? (jthrowable)&io_exception_obj : NULL;
+}
+
+static void
+blast_ExceptionClear(JNIEnv *env)
+{
+    blast_pending_exception = 0;
+}
+
+static jboolean
+blast_ExceptionCheck(JNIEnv *env)
+{
+    return blast_pending_exception ? JNI_TRUE : JNI_FALSE;
+}
 
 /* SystemAndroidDelegate returns every device fact as a String, counts
  * included. These are read once at startup and believed; GetTotalRAM in
@@ -223,6 +326,37 @@ static jobject
 blast_CallStaticObjectMethodV(JNIEnv *env, jclass clazz, jmethodID method, va_list args)
 {
     const char *v = NULL;
+
+    /* The engine's route to the AssetManager: MainActivity.GetInstance()
+     * then .getAssets() on it. Returning NULL from either left it starting
+     * its filesystem with nothing, and the game rendered black. */
+    if (method_is(GetInstance)) return (jobject)&main_activity_obj;
+    if (method_is(getAssets))   return (jobject)&asset_manager_obj;
+
+    /* AssetManager.open(name)/openFd(name). The engine reads SOME things
+     * through Java's AssetManager (out of the apk's assets/) as well as the
+     * published/ tree it fopen()s directly — and tools/ds-stage.sh strips
+     * assets/ out of the apk entirely. Log the exact names before deciding
+     * whether that strip was wrong or whether only the two small .ini files
+     * need to go back. */
+    if (method_is(open) || method_is(openFd)) {
+        char *name = dup_jstring(global, va_arg(args, jstring *));
+        jobject st = method_is(open) ? blast_asset_open(name) : NULL;
+        if (st == NULL)
+            blast_pending_exception = 1;      /* Android throws IOException here */
+        fprintf(stderr, "[BLAST-ASSET] %s(\"%s\") -> %s\n", method->name,
+                name ? name : "?", st ? "stream" : "NULL (IOException pending)");
+        free(name);
+        return st;
+    }
+    if (method_is(list)) {
+        /* AssetManager.list(dir) -> String[]. Nothing here needs a real
+         * listing yet; an EMPTY array is a very different answer from null
+         * (which would throw on Android), so return one. */
+        return (jobject)(*env)->NewObjectArray(env, 0, NULL, NULL);
+    }
+    if (method_is(getVersion))
+        return (*env)->NewStringUTF(env, "1.2.0");
 
     if (method_is(GetAppDataDirectory))        v = eablast_priv.home;
     else if (method_is(GetExternalStorageDirectory)) v = eablast_priv.content_root;
@@ -281,6 +415,35 @@ blast_CallIntMethodV(JNIEnv *env, jobject obj, jmethodID method, va_list args)
     if (method_is(GetDefaultHeight)) return eablast_priv.screen_h;
     if (method_is(GetStdOrientation)) return 0;   /* see NativeGetOrientationNormal */
 
+    if (blast_is_stream(obj)) {
+        struct blast_stream *st = (struct blast_stream *)obj;
+        if (method_is(available)) {
+            long here = ftell(st->fp), end;
+            fseek(st->fp, 0, SEEK_END); end = ftell(st->fp); fseek(st->fp, here, SEEK_SET);
+            return (jint)(end - here);
+        }
+        if (method_is(read)) {
+            /* InputStream.read() -> one byte or -1; read(byte[],off,len) -> n or -1. */
+            if (method->sig && strcmp(method->sig, "()I") == 0) {
+                int c = fgetc(st->fp);
+                return (jint)c;   /* EOF is -1, which is what Java returns */
+            } else {
+                struct dummy_array *a = va_arg(args, struct dummy_array *);
+                jint off = 0, len;
+                size_t n;
+                if (method->sig && strcmp(method->sig, "([BII)I") == 0) {
+                    off = va_arg(args, jint);
+                    len = va_arg(args, jint);
+                } else {
+                    len = a ? (jint)a->length : 0;
+                }
+                if (a == NULL || a->data == NULL || len <= 0) return 0;
+                n = fread((char *)a->data + off, 1, (size_t)len, st->fp);
+                return n > 0 ? (jint)n : -1;
+            }
+        }
+    }
+
     /* android.media.AudioTrack.write([BII)I / ([SII)I — the engine's audio sink. */
     if (method_is(write) && obj == (jobject)&audio_track_obj) {
         struct dummy_array *a = va_arg(args, struct dummy_array *);
@@ -316,6 +479,16 @@ static jboolean
 blast_CallBooleanMethodV(JNIEnv *env, jobject obj, jmethodID method, va_list args)
 {
     if (method_is(IsTouchScreenMultiTouch)) return JNI_TRUE;
+    /* com.eamobile.Query.isContentReady() just returns Query.contentReady, the
+     * flag the download/unzip flow sets. Our content is staged on disk before
+     * the process starts, so it is ready by definition. Answering false (the
+     * old default) is a plausible reason for a black screen: the engine polls
+     * this before it will build anything. */
+    if (method_is(isContentReady)) {
+        static int once = 0;
+        if (!once++) fprintf(stderr, "[BLAST] isContentReady -> true (content is staged)\n");
+        return JNI_TRUE;
+    }
     if (method_is(IntentView)) return JNI_FALSE;   /* no browser to hand off to */
     blast_trace_unhandled("bool", method);
     return JNI_FALSE;
@@ -342,6 +515,35 @@ blast_CallVoidMethodV(JNIEnv *env, jobject obj, jmethodID method, va_list args)
         fprintf(stderr, "[BLAST] SetStdOrientation(%d)\n", va_arg(args, int));
         return;
     }
+    /* Engine -> its own Java statics -> back into native. Dispatch by class:
+     * EAIO and rwfilesystem both expose Startup(AssetManager). */
+    if (method_is(Startup)) {
+        struct dummy_jclass *c = (struct dummy_jclass *)obj;
+        const char *cn = (c && c->name) ? c->name : "";
+        if (strstr(cn, "rwfilesystem") && eablast_priv.rwfilesystem_Startup) {
+            blast_once(&did_rwfs_startup, "rwfilesystem_Startup", "engine");
+            eablast_priv.rwfilesystem_Startup(env, (jclass)&asset_manager_class,
+                                              (jobject)&asset_manager_obj);
+        } else if (eablast_priv.EAIO_Startup) {
+            blast_once(&did_eaio_startup, "EAIO_Startup", "engine");
+            eablast_priv.EAIO_Startup(env, (jclass)&asset_manager_class,
+                                      (jobject)&asset_manager_obj);
+        }
+        return;
+    }
+    if (method_is(Init) && eablast_priv.EAThread_Init) {
+        blast_once(&did_eathread_init, "EAThread_Init", "engine");
+        eablast_priv.EAThread_Init(env, (jobject)&main_activity_obj);
+        return;
+    }
+
+    if (blast_is_stream(obj) && method_is(close)) {
+        struct blast_stream *st = (struct blast_stream *)obj;
+        if (st->fp) { fclose(st->fp); st->fp = NULL; }
+        return;
+    }
+    if (method_is(ApplyKeepAwake)) return;          /* PowerManagerAndroid */
+    if (method_is(OnLifeCycleFocusGained)) return;  /* DeviceOrientationHandler */
     if (method_is(SetEnabled))  return;   /* LocationManagerAndroid */
     if (method_is(Shutdown))    return;   /* VirtualKeyboardAndroidDelegate */
     blast_trace_unhandled("void", method);
@@ -359,7 +561,16 @@ blast_NewObjectV(JNIEnv *env, jclass clazz, jmethodID method, va_list args)
     struct dummy_jclass *c = clazz;
     if (c && strcmp(c->name, "android/media/AudioTrack") == 0)
         return (jobject)&audio_track_obj;
-    fprintf(stderr, "[BLAST-JNI] UNHANDLED new %s\n", c ? c->name : "?");
+    if (c && c->name) {
+        /* The delegates (SystemAndroidDelegate, DisplayAndroidDelegate, ...)
+         * are plain objects the engine news up and then calls through. Hand
+         * back something named rather than NULL, so the instance calls land in
+         * CallObjectMethodV with a class we can identify. */
+        struct blast_object *o = malloc(sizeof(*o));
+        o->name = strdup(c->name);
+        fprintf(stderr, "[BLAST-JNI] new %s -> delegate object\n", c->name);
+        return (jobject)o;
+    }
     return NULL;
 }
 
@@ -494,14 +705,19 @@ eablast_init(struct SupportModule *self, int width, int height, const char *home
     /* EAIO/rwfilesystem Startup take an AssetManager. The engine imports no
      * AAsset* symbols, so it cannot be doing AAssetManager_fromJava on it —
      * but hand it a real object rather than NULL so nothing can fault on it. */
-    if (p->EAThread_Init)        { fprintf(stderr, "[BLAST] EAThread_Init\n");
-                                   p->EAThread_Init(ENV_M, GLOBAL_M); }
-    if (p->rwfilesystem_Startup) { fprintf(stderr, "[BLAST] rwfilesystem_Startup\n");
-                                   p->rwfilesystem_Startup(ENV_M, (jclass)&asset_manager_class,
-                                                           (jobject)&asset_manager_class); }
-    if (p->EAIO_Startup)         { fprintf(stderr, "[BLAST] EAIO_Startup\n");
-                                   p->EAIO_Startup(ENV_M, (jclass)&asset_manager_class,
-                                                   (jobject)&asset_manager_class); }
+    if (p->EAThread_Init && !did_eathread_init) {
+        blast_once(&did_eathread_init, "EAThread_Init", "module");
+        p->EAThread_Init(ENV_M, (jobject)&main_activity_obj);
+    }
+    if (p->rwfilesystem_Startup && !did_rwfs_startup) {
+        blast_once(&did_rwfs_startup, "rwfilesystem_Startup", "module");
+        p->rwfilesystem_Startup(ENV_M, (jclass)&asset_manager_class,
+                                (jobject)&asset_manager_obj);
+    }
+    if (p->EAIO_Startup && !did_eaio_startup) {
+        blast_once(&did_eaio_startup, "EAIO_Startup", "module");
+        p->EAIO_Startup(ENV_M, (jclass)&asset_manager_class, (jobject)&asset_manager_obj);
+    }
 
     fprintf(stderr, "[BLAST] NativeOnCreate\n");
     p->NativeOnCreate(ENV_M, GLOBAL_M);

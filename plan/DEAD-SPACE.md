@@ -3,7 +3,8 @@
 Target: **`android-candidates/Dead-Space.apk`** — `com.eamobile.deadspace_full_azn` 1.2.0
 (versionCode 1200), the **Amazon Appstore** build, dated 2013-10-22. 296 MB.
 
-Status: **module written, package built, nothing run yet.** 2026-09-15 evening, following
+Status: **boots and renders frame 1; crashes on frame 2.** See §6 for the device trail.
+Previously: **module written, package built, nothing run yet.** 2026-09-15 evening, following
 `PORTING-PLAYBOOK.md` §1–§2. Everything below is static analysis —
 `apkenv/modules/eablast.c` compiles and
 `apkenv/packaging/out/com.apkenv.deadspace_1.0.0_all.ipk` (174 MB) is ready to install, but **no
@@ -240,3 +241,54 @@ Expected, in order:
 **Reference device:** the HP 10 G2 Tablet (MT8127, Android 5.0.1) is on hand. Dead Space needs
 `armeabi`, which it runs, so the original apk can be installed there for a side-by-side — the
 fastest way to answer "is this supposed to look/sound/run like this?" (playbook §4).
+
+---
+
+## 6. Device trail (2026-09-15, runs ds-01…ds-06)
+
+One package install (174 MB), then binary-only pushes. **It boots.**
+
+| run | change | result |
+|---|---|---|
+| ds-01 | first launch | Boots clean, 24/24 natives, `chdir` to the content root OK, engine constants fetched (`down=393228 up=524300 move=262156`), audio device open, **60 fps** — and a black screen. Tracer named four gaps. |
+| ds-02 | answer `GetInstance` / `getAssets`, dispatch `Startup(AssetManager)`, give the delegates real objects | The engine's own `EAIO_Startup` call arrived and was correctly deduped against the module's pre-call. Still black; tracer now named `isContentReady`, `AssetManager.open/openFd`. |
+| ds-03 | `isContentReady -> true` (it is just `Query.contentReady`, the flag the download flow sets; our content is staged before the process starts), log asset names | Asset names revealed: **`EAMCore.ini`** — which `ds-stage.sh` had stripped out of the apk — and **`data.zip`**, which this SKU genuinely does not ship. |
+| ds-04 | serve `AssetManager.open()` as a real `java.io.InputStream` over staged files | It reads the ini, spawns 5 threads, **writes its first 2048 bytes of PCM** — then **SIGSEGV**. And the stack clamp fired exactly as §4 risk 2 predicted: `setstacksize(32768) too small for a glibc thread -> 131072`. |
+| ds-05 | `APKENV_TRACE_FILES=1` | **The engine opens no content file at all** — only `/proc/cpuinfo`. Probe verified to cover both `fopen` and `open`, and failures are logged unconditionally, so this is a real negative, not a blind spot. |
+| ds-06 | throw `IOException` on a failed `AssetManager.open` (Android throws; returning NULL is a wrong answer, playbook §4) | **No change** — same crash, same address. Theory spent; do not re-chase it. |
+
+### The open bug
+
+```
+signal 11 addr=(nil)  pc = libDeadSpace.so +0x35b570   r3 = 0
+  0x35b564: ldr r3, [sl]        ; sl is a stack slot -> NULL
+  0x35b570: ldr r1, [r3]        ; <- faults
+```
+
+The enclosing function builds textures — its named callees are
+`m3g::Texture2D::Texture2D(m3g::Image2D*)`, `setFiltering`, `setWrapping`,
+`eastl::vector<intrusive_ptr<m3g::Texture2D>>::reserve/DoInsertValue`, `GetAllocatorForCore`,
+`m3g::Object3D::getUserData`. The crash stack has Adreno frames (`leia_sethwstate_enables`,
+`rb_state_enables` in `libGLESv2.so`, which `libGLES_CM.so` sits on top of), so it is touching real
+GL at the time.
+
+**`[BLAST] first NativeOnDrawFrame returned` is in the log** — frame 1 completes. This dies on
+frame 2, building Texture2D objects, having loaded no texture from disk.
+
+**Ruled out so far:** the dual-GL-table hazard (no `[GLBIND]` line and no "shared names" rebinding
+here, unlike the ES2 ports — the ES1 table is used directly, which is right for this engine); a
+missing/failed content path (nothing is opened, and nothing *fails* to open); a missing
+`IOException` on the `data.zip` probe.
+
+**Next, in order:**
+1. The engine queries `GL_NUM_COMPRESSED_TEXTURE_FORMATS` / `GL_COMPRESSED_TEXTURE_FORMATS`
+   (strings confirmed in the binary). If the ES1 wrapper does not answer that `glGetIntegerv`, an
+   uninitialised count or a zero-length array is an easy route to the NULL seen here. Check the
+   wrapper, and log what the engine gets back.
+2. `APKENV_GL_UPLOADCHECK` for `glGetError` around uploads, and a GL call trace over frames 1–2 —
+   frame 1 works, so a diff between the two frames is cheap and likely decisive.
+3. `openFd("EAMCore.ini")` still returns NULL+exception even though the file exists; the engine may
+   prefer the fd path for mapping. Serving a real `AssetFileDescriptor` is the obvious next
+   contract point if 1 and 2 come up empty.
+4. Reference device: install the original apk on the HP 10 G2 Tablet and watch `logcat` through the
+   same two frames. It runs `armeabi`, so it will take this build.

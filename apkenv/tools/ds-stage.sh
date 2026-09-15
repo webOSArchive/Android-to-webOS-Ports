@@ -52,6 +52,14 @@ rm -rf "$OUT/content"
 mkdir -p "$OUT/content"
 cp -r "$WORK/assets/published" "$OUT/content/published"
 
+# The engine also reads a couple of small config files through Java's
+# AssetManager (EAMCore.ini and friends), not just the published/ tree it
+# fopen()s. Stripping assets/ out of the apk took those with it, so stage them
+# alongside; modules/eablast.c serves AssetManager.open() from here.
+mkdir -p "$OUT/content/assets"
+find "$WORK/assets" -maxdepth 1 -type f -exec cp {} "$OUT/content/assets/" \;
+echo "== staged $(ls "$OUT/content/assets" | wc -l) loose asset file(s): $(ls "$OUT/content/assets" | tr '\n' ' ')"
+
 # Verify, loudly. A short content tree is a game that boots and then fails to
 # find a level, which is a much more expensive thing to debug on the device.
 SRC_N=$(find "$WORK/assets/published" -type f | wc -l)
