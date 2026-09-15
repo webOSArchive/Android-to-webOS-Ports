@@ -75,26 +75,50 @@ if [ -n "${EXTRAS:-}" ] && [ -d "$EXTRAS" ]; then
 fi
 
 # Launcher icon: extract the largest available app icon from the game apk at
-# package time (not committed — copyrighted game art). Tolerant of naming
-# (iconfree.png / ic_launcher.png) and never fatal.
+# package time (not committed — copyrighted game art). Never fatal.
+#
+# Deterministic on purpose. This used to unzip every candidate into a temp dir
+# and take `find | head -1`, which is filesystem-order dependent — so a rebuild
+# could silently swap the icon, and Fruit Ninja shipped the paid artwork while
+# its manifest declares the free one. Now: ask aapt what the manifest actually
+# points at, prefer that name's "_large" variant, walk densities high to low,
+# take the FIRST hit, and say which file was used.
 if [ -n "${ICON:-}" ] && [ -f "$ICON" ]; then
     cp "$ICON" "$STAGE/icon.png"
+    echo "icon: $ICON (explicit)"
 elif [ -f "$APK" ]; then
     rm -rf packaging/.icontmp && mkdir -p packaging/.icontmp
-    for n in iconfree ic_launcher app_icon icon; do
-        for d in xhdpi hdpi mdpi drawable; do
-            unzip -o -q "$APK" "res/drawable-$d/$n.png" -d packaging/.icontmp 2>/dev/null || \
-            unzip -o -q "$APK" "res/$d/$n.png"          -d packaging/.icontmp 2>/dev/null || true
+
+    # The manifest's own icon, e.g. res/drawable-mdpi/icon_free.png -> icon_free
+    manifest_icon=""
+    if command -v aapt >/dev/null 2>&1; then
+        manifest_icon=$(aapt dump badging "$APK" 2>/dev/null |
+            sed -n "s/^application:.*icon='res\/[^/]*\/\([^']*\)\.png'.*/\1/p" | head -1)
+    fi
+
+    # Bigger art first: "<name>_large" beats "<name>".
+    names=""
+    [ -n "$manifest_icon" ] && names="${manifest_icon}_large $manifest_icon"
+    names="$names iconfree_large iconfree icon_large icon ic_launcher app_icon"
+
+    src=""
+    for n in $names; do
+        for d in drawable-xxhdpi drawable-xhdpi drawable-hdpi drawable drawable-mdpi; do
+            if unzip -o -q "$APK" "res/$d/$n.png" -d packaging/.icontmp 2>/dev/null &&
+               [ -s "packaging/.icontmp/res/$d/$n.png" ]; then
+                src="packaging/.icontmp/res/$d/$n.png"
+                break 2
+            fi
         done
     done
-    src=$(find packaging/.icontmp -name '*.png' 2>/dev/null | head -1)
+
     if [ -n "$src" ]; then
         if command -v convert >/dev/null 2>&1; then
-            convert "$src" -resize 64x64\! "$STAGE/icon.png"
+            convert "$src" -filter Lanczos -resize 64x64\! "$STAGE/icon.png"
         else
             cp "$src" "$STAGE/icon.png"
         fi
-        echo "icon: $(basename "$src")"
+        echo "icon: ${src#packaging/.icontmp/} ($(identify -format '%wx%h' "$src" 2>/dev/null))"
     else
         echo "WARNING: no app icon found in apk — launcher will show a placeholder"
     fi
