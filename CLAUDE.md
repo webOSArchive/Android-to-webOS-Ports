@@ -34,6 +34,10 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
   The game's gnustl `std::ofstream` wrote its 11 MB of sound banks to **stdin** and left empty files.
   Only a `writev` trace showed it. Host note: `gcc-13-arm-linux-gnueabi` was apt-removed on
   2026-09-15; reinstall it for `build-webos.sh`.
+- **Next up: RoboCop 3.0.6 (Glu, Unity 4.2.2f1 + Mono), scoped but NOT started (2026-09-16):**
+  `android-candidates/robocop_3.0.6.apk` + `main.1309.com.glu.robocop.obb` (299 MB zip). **Runs offline
+  under ACL** on the TouchPad (user-confirmed), so ACL is the reference. Scope in `plan/ROBOCOP-SCOPING.md`.
+  Main gap: the host Mono lacks 6 `mono_unity_*` symbols libunity 4.2 imports.
 - **Dead Space (EA Mobile, BLAST engine) — RELEASED 1.0.0 (2026-09-15)**, fresh-installed from the
   package and verified on a clean profile: `apkenv/packaging/out/com.apkenv.deadspace_1.0.0_all.ipk`
   (174 MB). Launcher icon, 3:2 letterbox (1024x682), menus, 3D intro and cutscenes, audio with zero
@@ -79,7 +83,7 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
   (and `/dev/fb0`) misses the GL layer, so the game reads its own frame back: the script drops
   `/media/internal/.apkenv/grab` over novacom, the render loop consumes it within ~0.5 s and writes
   the next frame, and the script saves a PNG under `apkenv/packaging/out/screenshots/` (gitignored).
-  Always on in binaries built since 2026-09-14; shipped packages older than that lack it.
+  Always on in binaries built since 2026-09-14; shipped packages older than that lack it. Before 2026-09-16 the device scripts hung when run from an interactive terminal (fixed: `timeout --foreground`, stdin at /dev/null).
 - **Amazing Alex HD (Rovio ka3d) — ported in ONE PASS (2026-08-26)** via the playbook: booted, music,
   playable on the first device launch; `apkenv/packaging/out/com.apkenv.amazingalex_1.0.0_all.ipk`.
   Trail: `plan/AMAZING-ALEX.md`. Module: `apkenv/modules/angrybirds.c` (now in the webOS build).

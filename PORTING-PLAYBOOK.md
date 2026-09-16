@@ -220,6 +220,10 @@ empty strings where the game re-prompts.
   `APKENV_UNITY_ICALL_TRACE=1` (`compat/icall_trace.c`) puts logging trampolines in front of them and
   reports each `Play()` with the clip's length, `isReadyToPlay` and `isPlaying` afterwards. Always run
   the positive control (a sound effect's `PlayOneShot` length) before trusting a 0.
+- **ACL on the TouchPad is an oracle too, on identical hardware.** Some candidates already run
+  under OpenMobile ACL (RoboCop 3.0.6 does, offline). Before porting one, run it there: it settles
+  "does it need the network", what the first screens look like, and what speed to expect on
+  the Adreno 220, with no difference in panel or GPU to argue about.
 - **A real Android device is the fastest oracle.** Install the original apk (+ OBB at
   `/sdcard/Android/obb/<pkg>/`) with `adb`, play the same stretch, and diff: `logcat` (Unity's own
   messages), `/proc/<pid>/task/*/{comm,stat}` for thread names and CPU (readable without root), and the
@@ -293,7 +297,13 @@ Memory: PvZ needs ~450 MB free; `requiredMemory` in `appinfo.json` makes webOS r
 - Transport: **USB/novacom is the reliable path** (`novacom put file:///path < local`,
   `novacom run file:///bin/<binary> -- args`; `sh -c` argument passing is mangled — run binaries
   directly, or a script file via `novacom run file:///bin/sh -- /path/script.sh`). SSH `.88` works
-  only with the legacy-cipher options in `tools/deploy-tp.sh`. Three traps, each cost a cycle:
+  only with the legacy-cipher options in `tools/deploy-tp.sh`. **Scripts: wrap every novacom call as
+  `timeout --foreground N novacom … < /dev/null`.** Plain `timeout` puts novacom in a background
+  process group; from an interactive terminal `novacom run`/`put` then touches the tty, gets
+  SIGTTIN and sits stopped (`T` in `ps`) forever. Tools only ever driven from a non-tty (an agent's
+  shell) never show it, so `tools/grab.sh` hung on the user's first run (fixed 2026-09-16 in all
+  device scripts). Test a user-facing tool under a pty: `script -qec "tools/x.sh" /dev/null`.
+  Three traps, each cost a cycle:
   **(1)** pass the `--` separator exactly once. A second one is delivered as the target's `argv[1]`,
   and busybox then treats the real flags as operands — it surfaced as
   `mkdir: can't create directory '-p'`. **(2)** `novacom run`'s cwd is `/`, which webOS mounts
@@ -664,6 +674,24 @@ apkenv's cleanup: glibc's `exit()` ran the engine's C++ static destructors, whic
 and they double-freed what the game's background teardown had already released. Fix
 (`modules/cocos2dx.c`): register an `atexit` handler that calls `_exit(0)`, and **register it in
 deinit**, because function-local statics register their destructors lazily and atexit is LIFO.
+
+**Know which precedent a data layout matches.** An **OBB** (`main.<ver>.<pkg>.obb`, a zip the
+engine opens itself) ships unmodified via `EXTRAS=`; Aralon is the example. **Content inside the
+apk** that the engine can read only as plain files is Dead Space's case: strip the apk and ship the
+tree (`tools/ds-stage.sh`). An engine with its own zip reader over the apk (Fruit Ninja, Tiny Death
+Star) needs neither.
+
+**The build host can change under you.** On 2026-09-16 `arm-linux-gnueabi-gcc-13` had been
+apt-removed the previous evening, so `build-webos.sh` failed with `command not found`. Without
+touching system packages: `apt-get download gcc-13-arm-linux-gnueabi && dpkg -x … root`, then link
+`root/usr/libexec/gcc-cross/arm-linux-gnueabi/13/*`, `root/usr/lib/gcc-cross/arm-linux-gnueabi/13/*`
+and `root/usr/arm-linux-gnueabi` to the still-installed `cc1`, headers and binutils, and put
+`root/usr/bin` first on `PATH`. The permanent fix is `sudo apt install gcc-13-arm-linux-gnueabi`.
+
+**Check a build succeeded before pushing it.** A `grep "error|DONE"` pipeline followed by
+`push-run.sh` on the next line happily pushed the *previous* binary after a compile error (a
+duplicate `my_tmpfile`). That cost one confusing run. Chain with `&&` on a `DONE` match, or check the
+object is newer than the source.
 
 **Drive the first-run dialogs synthetically.** `APKENV_COCOS_AUTOTAP` tapped "NO" on the push
 notification prompt at frame 400, which got runs past it into the tutorial without a person.
