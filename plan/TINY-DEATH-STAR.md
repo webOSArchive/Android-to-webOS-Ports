@@ -55,6 +55,22 @@ and is a fallback only. Module: `apkenv/modules/cocos2dx.c`. Logs: `plan/logs/td
 - **tds-11**: the fallback system font is now Prelude (56 KB). ArialUnicode (23 MB in RAM) is kept
   as second choice.
 
+- **User playtest** (past the tutorial, fine) then swiped the card away: the log ended in
+  `free(): invalid pointer` + SIGABRT. The progress survived, because the save had already been
+  written.
+  - **Where the save is:** `app_data/ad_cache`, a 12-byte header then zlib JSON (coins, bitizens,
+    floors), written as `.tmp` then renamed. `texture_cache.bak` is the zlib content spreadsheet,
+    not player data.
+  - **tds-pause1 / exit1..5:** reproduced without a person by `palm-launch com.palm.calculator` (the
+    card loses APPACTIVE → pause) then `kill -15` (SDL_QUIT). Pause→resume was fine (a new OpenSL
+    engine, audio back). The abort needed quit **while paused**. `[EXIT]` markers put it after all of
+    apkenv's cleanup, in `exit()`'s handlers: the engine's lazily registered C++ static destructors
+    (function-local singletons, SoundBoard among them) free FMOD objects that
+    applicationDidEnterBackground had already released. Android never runs those destructors. Fix:
+    `deinit` registers an `atexit` handler that `_exit(0)`s, and it has to be registered in deinit,
+    because lazy registrations come later and atexit is LIFO. deinit also no longer pauses a
+    second time.
+
 ## Lessons worth carrying
 1. **bionic's stdio macros read the FILE struct.** Anything built against bionic headers can inline
    `fileno`/`feof`/`ferror` as field reads. apkenv returned glibc `FILE`s, so those reads returned
@@ -63,7 +79,11 @@ and is a fallback only. Module: `apkenv/modules/cocos2dx.c`. Logs: `plan/logs/td
 2. **Trace the write side too.** The open-only file trace said every open was "ok". Only a
    `writev` trace showed where the bytes went.
 3. **`recursive_mkdir(path)` needs a trailing slash** to create the last component.
-4. **A shim can be the cheaper path even when the engine has a fallback.** FMOD would have fallen
+4. **Exit like Android.** An Android process is killed after onDestroy, so a game's C++ static
+   destructors never run, and after its background teardown they can double-free. End the process
+   with `_exit` once the host's own cleanup is done. Register that at the last moment: lazily
+   registered destructors run before earlier-registered handlers.
+5. **A shim can be the cheaper path even when the engine has a fallback.** FMOD would have fallen
    back to AudioTrack, but the game shipped on OpenSL. `compat/opensles.c` is now a general sink,
    gated per module, with a host unit test (`tools/openslestest.c`).
 

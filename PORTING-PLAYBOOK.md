@@ -657,5 +657,13 @@ second, starved the audio thread, and dipped to 17 fps.
 **`recursive_mkdir(path)` creates only up to the last `/`.** Pass a trailing slash for a directory
 you hand the engine as `getWritablePath()`/`getDir()`.
 
+**Test the lifecycle without a person, and exit like Android.** `palm-launch com.palm.calculator`
+takes APPACTIVE away (the module's pause), `palm-launch <appid>` brings it back (resume), and
+`kill -15` delivers SDL_QUIT (deinit). Swiping away a *paused* card aborted in `free()` after all of
+apkenv's cleanup: glibc's `exit()` ran the engine's C++ static destructors, which Android never runs,
+and they double-freed what the game's background teardown had already released. Fix
+(`modules/cocos2dx.c`): register an `atexit` handler that calls `_exit(0)`, and **register it in
+deinit**, because function-local statics register their destructors lazily and atexit is LIFO.
+
 **Drive the first-run dialogs synthetically.** `APKENV_COCOS_AUTOTAP` tapped "NO" on the push
 notification prompt at frame 400, which got runs past it into the tutorial without a person.

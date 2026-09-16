@@ -1214,6 +1214,7 @@ int main(int argc, char **argv)
 
 finish:
     module->deinit(module);
+    fprintf(stderr, "[EXIT] module deinit done; freeing JNI library tables\n");
 
     lib = global.libraries;
     while (lib!=0) {
@@ -1231,8 +1232,11 @@ finish:
     if (global.apk_in_mem)
         munmap((void *)global.apk_in_mem, global.apk_size);
     close(global.apk_fd);
+    fprintf(stderr, "[EXIT] closing apk\n");
     apk_close(global.apklib_handle);
+    fprintf(stderr, "[EXIT] platform exit\n");
     global.platform->exit();
+    fprintf(stderr, "[EXIT] platform exit done\n");
 
     if(NULL != libdvm_handle) {
         apkenv_android_dlclose(libdvm_handle);

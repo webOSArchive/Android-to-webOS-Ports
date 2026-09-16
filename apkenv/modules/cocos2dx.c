@@ -97,6 +97,7 @@ struct SupportModulePriv {
     char home[PATH_MAX];
     int  view_w, view_h;        /* what the engine believes the surface is */
     int  portrait;
+    int  paused;                /* between pause() and resume() */
     int  want_exit;
 };
 static struct SupportModulePriv cocos2dx_priv;
@@ -917,6 +918,23 @@ cocos2dx_try_init(struct SupportModule *self)
     return 1;
 }
 
+/* Android never runs a game's C++ static destructors: the process is killed
+ * after onDestroy. glibc's exit() does run them (libgame registered them with
+ * __cxa_atexit at load), and after applicationDidEnterBackground has torn
+ * FMOD down, SoundBoard's destructor frees it again: "free(): invalid
+ * pointer", SIGABRT, every time the card was swiped away while paused.
+ * Registered in deinit — the last moment, because function-local statics
+ * (SoundBoard's singleton among them) register their destructors lazily at
+ * first use, and atexit is LIFO — so it runs before all of them, once
+ * apkenv's own cleanup (SDL/PDL exit) is complete. */
+static void
+cc_exit_like_android(void)
+{
+    fprintf(stderr, "[COCOS] exit: skipping the engine's static destructors, as Android does\n");
+    fflush(NULL);
+    _exit(0);
+}
+
 static void
 cocos2dx_init(struct SupportModule *self, int width, int height, const char *home)
 {
@@ -1155,14 +1173,30 @@ cocos2dx_update(struct SupportModule *self)
 static void
 cocos2dx_deinit(struct SupportModule *self)
 {
+    atexit(cc_exit_like_android);
+    /* Android runs onPause exactly once before onStop/onDestroy. Swiping the
+     * card away while it is already paused (the normal way to close it) used
+     * to run AppDelegate::applicationDidEnterBackground a second time, and the
+     * game's second SoundBoard/FMOD teardown aborted in free() ("invalid
+     * pointer"). The save had already been written by the first pass. */
+    if (self->priv->paused) {
+        fprintf(stderr, "[COCOS] deinit: already paused, not pausing twice\n");
+        return;
+    }
+    fprintf(stderr, "[COCOS] deinit: nativeOnPause\n");
+    if (self->priv->soundBoardBackground)
+        self->priv->soundBoardBackground(ENV_M, (jclass)&tds_class);
     if (self->priv->nativeOnPause)
         self->priv->nativeOnPause(ENV_M, (jclass)&cocos_renderer_class);
+    self->priv->paused = 1;
 }
 
 static void
 cocos2dx_pause(struct SupportModule *self)
 {
     fprintf(stderr, "[COCOS] pause\n");
+    if (self->priv->paused) return;
+    self->priv->paused = 1;
     if (self->priv->soundBoardBackground)
         self->priv->soundBoardBackground(ENV_M, (jclass)&tds_class);
     if (self->priv->nativeOnPause)
@@ -1173,6 +1207,8 @@ static void
 cocos2dx_resume(struct SupportModule *self)
 {
     fprintf(stderr, "[COCOS] resume\n");
+    if (!self->priv->paused) return;
+    self->priv->paused = 0;
     if (self->priv->nativeOnResume)
         self->priv->nativeOnResume(ENV_M, (jclass)&cocos_renderer_class);
     if (self->priv->soundBoardForeground)
