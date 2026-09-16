@@ -21,6 +21,19 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
 - **`android-candidates/`** — candidate `.apk`s for porting (incl. `PvZ HD v.1.1 ANDROID.apk`, the shipped one): `wheresmywater_1.0.2.apk` (the active spike), `wheresmywater2_1.0.1.apk`, `cut-the-rope_2.3.apk`, `fruitninja_1.8.8.apk`, `bejeweledblitz_1.4.4.apk`, `flappybird_1.0.apk`, `templerun2_1.2.1.apk`.
 
 ## Current state
+- **Star Wars: Tiny Death Star 1.4.1 (Cocos2d-x 2.0.4) — ported in ONE SESSION (2026-09-16),
+  release candidate 1.0.0**, fresh-install verified: `apkenv/packaging/out/com.apkenv.tinydeathstar_1.0.0_all.ipk`
+  (50 MB, the apk carries all assets). Portrait via the ES2 FBO, the game's own LucasArts loading
+  splash, touch, FreeType text for `Cocos2dxBitmap`, FMOD music and SFX at 29 fps with zero
+  underruns. The user confirmed music and touch on the panel; longer gameplay not yet verified.
+  New module: `apkenv/modules/cocos2dx.c` (first cocos2d-x host). Trail: `plan/TINY-DEATH-STAR.md`.
+  **Two systemic pieces, both opt-in per module:** `compat/opensles.c` (an OpenSL ES sink: this
+  FMOD shipped OpenSL-only; host test `tools/openslestest.c`) and **bionic-layout FILE proxies**
+  (`apkenv_bionic_stdio_enable()` in `compat/libc_wrappers.c`). **The lesson worth carrying:**
+  bionic's `fileno` is a macro that reads `fp->_file` at offset 14, and a glibc `FILE` has 0 there.
+  The game's gnustl `std::ofstream` wrote its 11 MB of sound banks to **stdin** and left empty files.
+  Only a `writev` trace showed it. Host note: `gcc-13-arm-linux-gnueabi` was apt-removed on
+  2026-09-15; reinstall it for `build-webos.sh`.
 - **Dead Space (EA Mobile, BLAST engine) — RELEASED 1.0.0 (2026-09-15)**, fresh-installed from the
   package and verified on a clean profile: `apkenv/packaging/out/com.apkenv.deadspace_1.0.0_all.ipk`
   (174 MB). Launcher icon, 3:2 letterbox (1024x682), menus, 3D intro and cutscenes, audio with zero

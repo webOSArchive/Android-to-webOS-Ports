@@ -1,3 +1,4 @@
+#include <sys/uio.h>
 #include "libc_wrappers.h"
 #include <sys/mman.h>
 #include "hooks.h"
@@ -90,10 +91,74 @@ acct_read(int fd, long n)
 
 static FILE *stdio_files[3];
 
-#define IS_STDIO_FILE(_f) \
+#define IS_SF_FILE(_f) \
     ((size_t)((void *)(_f) - (void *)&my___sF) < sizeof(my___sF))
+
+/* ── bionic-layout FILE proxies ─────────────────────────────────────────────
+ * bionic's <stdio.h> turns fileno()/feof()/ferror() into MACROS that read the
+ * FILE struct directly: _file is a short at offset 14. Code built against it
+ * (gnustl's basic_filebuf in Tiny Death Star's libgame, for one) never calls
+ * fileno — it reads fp->_file. A glibc FILE has the upper half of
+ * _IO_read_base there, i.e. 0 for a fresh stream, so std::ofstream wrote an
+ * 11 MB sound bank to fd 0 and left an empty file behind.
+ *
+ * When enabled (apkenv_bionic_stdio_enable(), opt-in per module so shipped
+ * ports are unchanged), fopen/fdopen/freopen/tmpfile return a proxy laid out
+ * like bionic's struct __sFILE (84 bytes on 32-bit) with _file filled in and
+ * _r/_w = 0 so the inline getc/putc fast paths always fall back to calls, and
+ * every FILE wrapper maps the proxy back to the real glibc stream. */
+#define BIONIC_SFILE_SIZE 84
+#define FILE_PROXY_MAGIC 0x46505258u   /* "FPRX" */
+struct bionic_file_proxy {
+    unsigned char *_p;
+    int   _r;
+    int   _w;
+    short _flags;
+    short _file;
+    char  _rest[BIONIC_SFILE_SIZE - 16];
+    unsigned int magic;
+    FILE *real;
+};
+static int bionic_stdio_proxies = 0;
+
+void
+apkenv_bionic_stdio_enable(void)
+{
+    if (!bionic_stdio_proxies)
+        fprintf(stderr, "[STDIO] bionic-layout FILE proxies enabled (fp->_file readable)\n");
+    bionic_stdio_proxies = 1;
+}
+
+static inline int
+is_file_proxy(const void *f)
+{
+    const struct bionic_file_proxy *p = f;
+    return f != NULL && p->magic == FILE_PROXY_MAGIC && p->real != NULL;
+}
+
+static FILE *
+file_proxy_wrap(FILE *real)
+{
+    struct bionic_file_proxy *p;
+    if (real == NULL || !bionic_stdio_proxies)
+        return real;
+    p = calloc(1, sizeof(*p));
+    if (p == NULL)
+        return real;
+    p->_file = (short)fileno(real);
+    p->_flags = 0x0010;     /* __SRW: read/write via calls, never the inline buffer */
+    p->magic = FILE_PROXY_MAGIC;
+    p->real = real;
+    return (FILE *)p;
+}
+
+/* Existing wrappers test IS_STDIO_FILE and map with TO_STDIO_FILE; proxies
+ * ride the same branch. (IS_SF_FILE is for the few that treat bionic's own
+ * stdin/stdout/stderr specially.) */
+#define IS_STDIO_FILE(_f) (IS_SF_FILE(_f) || is_file_proxy(_f))
 #define TO_STDIO_FILE(_f) \
-    stdio_files[(size_t)((void *)(_f) - (void *)&my___sF) / SIZEOF_SF]
+    (IS_SF_FILE(_f) ? stdio_files[(size_t)((void *)(_f) - (void *)&my___sF) / SIZEOF_SF] \
+                    : ((struct bionic_file_proxy *)(void *)(_f))->real)
 
 static inline void swap(void **a, void **b)
 {
@@ -208,6 +273,13 @@ int
 my_fclose(FILE *__stream)
 {
     WRAPPERS_DEBUG_PRINTF("fclose(%x, %x)\n", __stream, &my___sF);
+    if (is_file_proxy(__stream)) {
+        struct bionic_file_proxy *p = (struct bionic_file_proxy *)(void *)__stream;
+        int r = fclose(p->real);
+        p->magic = 0;
+        free(p);
+        return r;
+    }
     if (IS_STDIO_FILE(__stream))
         return fclose(TO_STDIO_FILE(__stream));
     else
@@ -368,7 +440,7 @@ my_fopen(__const char *__restrict __filename, __const char *__restrict __modes)
     }
     WRAPPERS_DEBUG_PRINTF("fopen(%s, %s) -> %x\n", __filename, __modes, f);
     trace_file_open("fopen", __filename, f != NULL, errno);
-    return f;
+    return file_proxy_wrap(f);
 }
 int
 my_fputc(int __c, FILE *__stream)
@@ -436,9 +508,17 @@ FILE *
 my_freopen(__const char *__restrict __filename, __const char *__restrict __modes, FILE *__restrict __stream)
 {
     WRAPPERS_DEBUG_PRINTF("freopen()\n", __filename, __modes, __stream);
-    if (IS_STDIO_FILE(__stream)) {
+    if (IS_SF_FILE(__stream)) {
         printf("IGNORING freopen\n");
         return NULL;
+    }
+    if (is_file_proxy(__stream)) {
+        struct bionic_file_proxy *p = (struct bionic_file_proxy *)(void *)__stream;
+        FILE *r = freopen(__filename, __modes, p->real);
+        if (r == NULL) { p->magic = 0; free(p); return NULL; }
+        p->real = r;
+        p->_file = (short)fileno(r);
+        return __stream;
     }
     return freopen(__filename, __modes, __stream);
 }
@@ -533,9 +613,40 @@ my_fwrite(__const void *__restrict __ptr, size_t __size, size_t __n, FILE *__res
     WRAPPERS_DEBUG_PRINTF("fwrite(%p, %zu, %zu, %p)\n", __ptr, __size, __n, __s);
     if (IS_STDIO_FILE(__s))
         return fwrite(__ptr, __size, __n, TO_STDIO_FILE(__s));
-    else
-        return fwrite(__ptr, __size, __n, __s);
+    else {
+        size_t r = fwrite(__ptr, __size, __n, __s);
+        if (trace_files_enabled() && __size * __n >= 4096)
+            fprintf(stderr, "[FILE] fwrite(%p, %zu x %zu) -> %zu\n", (void *)__s, __size, __n, r);
+        return r;
+    }
 }
+
+/* write/writev pass straight through; under APKENV_TRACE_FILES a failure is
+ * logged, because a write to a wrong fd (a FILE* layout mismatch reading
+ * bionic's _file field) otherwise leaves an empty file and no clue. */
+ssize_t
+my_writev(int fd, const struct iovec *iov, int cnt)
+{
+    ssize_t r = writev(fd, iov, cnt);
+    if (trace_files_enabled() && (r < 0 || fd <= 2))
+        fprintf(stderr, "[FILE] writev(fd=%d, %d iov) -> %d %s\n", fd, cnt, (int)r, r < 0 ? strerror(errno) : "");
+    return r;
+}
+
+
+/* FILE functions that used to map straight to glibc: they must see through a
+ * bionic-layout proxy (see file_proxy_wrap). */
+#define REAL_FILE(_f) (IS_STDIO_FILE(_f) ? TO_STDIO_FILE(_f) : (_f))
+FILE *my_fdopen(int fd, const char *mode) { return file_proxy_wrap(fdopen(fd, mode)); }
+int my_fgetpos(FILE *f, fpos_t *pos) { return fgetpos(REAL_FILE(f), pos); }
+int my_fsetpos(FILE *f, const fpos_t *pos) { return fsetpos(REAL_FILE(f), pos); }
+int my_vfscanf(FILE *f, const char *fmt, va_list ap) { return vfscanf(REAL_FILE(f), fmt, ap); }
+int my_getc(FILE *f) { return getc(REAL_FILE(f)); }
+int my_fgetc(FILE *f) { return fgetc(REAL_FILE(f)); }
+off_t my_ftello(FILE *f) { return ftello(REAL_FILE(f)); }
+int my_fseeko(FILE *f, off_t off, int whence) { return fseeko(REAL_FILE(f), off, whence); }
+int my_feof(FILE *f) { return feof(REAL_FILE(f)); }
+void my_rewind(FILE *f) { rewind(REAL_FILE(f)); }
 
 static struct addrinfo *
 dup_addrinfo(const struct addrinfo *ai)
@@ -867,10 +978,12 @@ int
 my_setvbuf(FILE *__restrict __stream, char *__restrict __buf, int __modes, size_t __n)
 {
     WRAPPERS_DEBUG_PRINTF("setvbuf()\n", __stream, __buf, __modes, __n);
-    if (IS_STDIO_FILE(__stream)) {
+    if (IS_SF_FILE(__stream)) {
         printf("IGNORING setvbuf\n");
         return 0;
     }
+    if (is_file_proxy(__stream))
+        return setvbuf(TO_STDIO_FILE(__stream), __buf, __modes, __n);
     return setvbuf(__stream, __buf, __modes, __n);
 }
 void
@@ -1064,7 +1177,7 @@ FILE *
 my_tmpfile()
 {
     WRAPPERS_DEBUG_PRINTF("tmpfile()\n");
-    return tmpfile();
+    return file_proxy_wrap(tmpfile());
 }
 char *
 my_tmpnam(char *__s)
@@ -1114,7 +1227,10 @@ ssize_t
 my_write(int __fd, __const void *__buf, size_t __n)
 {
     WRAPPERS_DEBUG_PRINTF("write()\n", __fd, __buf, __n);
-    return write(__fd, __buf, __n);
+    ssize_t r = write(__fd, __buf, __n);
+    if (trace_files_enabled() && (r < 0 ? __fd > 2 : (__n >= 4096 && __fd <= 2)))
+        fprintf(stderr, "[FILE] write(fd=%d, %zu) -> %d %s\n", __fd, __n, (int)r, r < 0 ? strerror(errno) : "(large write to a std fd)");
+    return r;
 }
 
 int

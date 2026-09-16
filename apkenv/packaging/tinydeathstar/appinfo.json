@@ -1,0 +1,10 @@
+{
+    "id": "com.apkenv.tinydeathstar",
+    "version": "1.0.0",
+    "vendor": "apkenv",
+    "type": "pdk",
+    "main": "apkenv",
+    "title": "Tiny Death Star",
+    "icon": "icon.png",
+    "requiredMemory": 300
+}

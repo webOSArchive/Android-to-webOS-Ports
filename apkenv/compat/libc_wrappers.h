@@ -123,6 +123,9 @@ long int
 my_ftell(FILE *__stream) SOFTFP;
 size_t
 my_fwrite(__const void *__restrict __ptr, size_t __size, size_t __n, FILE *__restrict __s) SOFTFP;
+ssize_t my_write(int fd, const void *buf, size_t n) SOFTFP;
+struct iovec;
+ssize_t my_writev(int fd, const struct iovec *iov, int cnt) SOFTFP;
 int
 my_getaddrinfo(const char *hostname, const char *servname,
     const struct addrinfo *hints, struct addrinfo **res) SOFTFP;
@@ -319,3 +322,16 @@ int apkenv_my_pthread_sigmask(int how, const unsigned long *set, unsigned long *
 int apkenv_my_sigprocmask(int how, const unsigned long *set, unsigned long *oset);
 void *my_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
 
+
+/* bionic-layout FILE proxies (compat/libc_wrappers.c) */
+void apkenv_bionic_stdio_enable(void);
+FILE *my_fdopen(int fd, const char *mode) SOFTFP;
+int my_fgetpos(FILE *f, fpos_t *pos) SOFTFP;
+int my_fsetpos(FILE *f, const fpos_t *pos) SOFTFP;
+int my_vfscanf(FILE *f, const char *fmt, va_list ap) SOFTFP;
+int my_getc(FILE *f) SOFTFP;
+int my_fgetc(FILE *f) SOFTFP;
+off_t my_ftello(FILE *f) SOFTFP;
+int my_fseeko(FILE *f, off_t off, int whence) SOFTFP;
+int my_feof(FILE *f) SOFTFP;
+void my_rewind(FILE *f) SOFTFP;

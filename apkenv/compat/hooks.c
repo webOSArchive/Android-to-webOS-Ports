@@ -38,6 +38,7 @@
 
 #include "hooks.h"
 #include "hostlib.h"
+#include "opensles.h"
 #include "../apkenv.h"
 #include "../linker/linker.h"
 
@@ -97,6 +98,9 @@ enum builtin_library_id {
     /* Only builtin while a host library is standing in for it - see
      * get_builtin_lib_handle(). Otherwise the apk's own copy loads normally. */
     BUILTIN_LIB_MONO = 3,
+    /* Only builtin once a module has called apkenv_opensles_enable(); every
+     * other port keeps seeing no libOpenSLES.so. See compat/opensles.h. */
+    BUILTIN_LIB_OPENSLES = 4,
 };
 
 static const char *builtin_libs[] = {
@@ -104,6 +108,7 @@ static const char *builtin_libs[] = {
     [BUILTIN_LIB_GLESV1] = "libGLESv1_CM.so",
     [BUILTIN_LIB_GLESV2] = "libGLESv2.so",
     [BUILTIN_LIB_MONO] = "libmono.so",
+    [BUILTIN_LIB_OPENSLES] = "libOpenSLES.so",
 };
 
 /* this is just to not log errors if those libs are missing */
@@ -176,6 +181,10 @@ void *apkenv_get_hooked_symbol_dlfcn(void *handle, const char *sym)
 
     if (is_builtin_lib_handle(handle)) {
         enum builtin_library_id builtin_lib_id = (const char **)handle - builtin_libs;
+        /* Resolved from the shim's own export table, never the global hooks
+         * table: SL names must not leak into other libraries' relocations. */
+        if (builtin_lib_id == BUILTIN_LIB_OPENSLES)
+            return apkenv_opensles_dlsym(sym);
 #ifdef APKENV_GLES
         if (builtin_lib_id == BUILTIN_LIB_GLESV1) {
             result = bsearch(&target, hooks_gles1, HOOKS_GLES1_COUNT,
@@ -382,6 +391,8 @@ void *get_builtin_lib_handle(const char *libname)
          * taken over this SONAME, fall through so the apk's copy is loaded as
          * usual. This keeps every other port (WMW/PvZ/Alex) unaffected. */
         if (i == BUILTIN_LIB_MONO && !apkenv_hostlib_provides(base))
+            return NULL;
+        if (i == BUILTIN_LIB_OPENSLES && !apkenv_opensles_enabled())
             return NULL;
         return &builtin_libs[i];
     }

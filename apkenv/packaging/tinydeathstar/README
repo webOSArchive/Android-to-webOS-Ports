@@ -1,0 +1,70 @@
+Tiny Death Star for webOS (HP TouchPad) — an apkenv port
+=======================================================
+
+This is the Android build of LucasArts / NimbleBit's **Star Wars: Tiny Death
+Star** (1.4.1) running *natively* on webOS. There is no ACL (OpenMobile's full
+Android runtime) and no Dalvik: apkenv is a slim shim — a gingerbread bionic
+linker loaded as a library, a fake-JNI layer, a webOS SDL/PDL backend, and a
+per-engine module that plays the part of the game's Android Java host.
+
+The engine is **Cocos2d-x 2.0.4** (lib/armeabi-v7a/libgame.so). The module
+(apkenv/modules/cocos2dx.c) answers its Java contract: the GL surface and frame
+loop, touch, text rasterization (Cocos2dxBitmap, done here with FreeType), the
+writable data directory, and device facts. Sound is the game's own FMOD, which
+plays through apkenv's OpenSL ES shim (apkenv/compat/opensles.c).
+
+WHAT WORKS
+----------
+  Portrait, full panel (768x1024 rendered, rotated onto the 1024x768 screen).
+  The LucasArts loading screen, the tutorial, building the tower, touch.
+  Music and sound effects (FMOD, 24000 Hz stereo).
+  Saves persist across restarts and reinstalls.
+
+WHAT IS MISSING, AND WHY
+------------------------
+  Anything that needs a network or an account: the Disney/Playdom social
+  features (visiting friends' towers), in-app purchases, ads, push
+  notifications, Facebook / Google+. The shim reports the device as offline,
+  a state the game already handles. The social SDK still tries to reach its
+  servers in the background and fails harmlessly.
+
+LAYOUT OF THIS APP DIRECTORY
+----------------------------
+  apkenv            The host binary (native ARM ELF). On launch it self-locates,
+                    cd's here, picks the game under android/, and runs it.
+  appinfo.json      webOS app manifest (type:pdk, main:apkenv).
+  icon.png          Launcher icon.
+  README            This file.
+
+  libs/webos/       Harvested Android 2.3 bionic libc/libm/libstdc++/liblog/libz,
+                    loaded by apkenv's own linker, plus the TouchPad's libEGL.so.
+
+  android/          tinydeathstar.apk is shipped whole: the engine reads its
+                    native libraries and all of its assets straight out of it.
+                    apkenv.env holds launch settings (see below).
+    extras/         tinydeathstar-splash-768x1024-rgb.raw — the game's own
+                    res/drawable-xhdpi/splash.png, pre-scaled raw RGB (bottom row
+                    first), shown while the tower loads.
+
+RUNTIME-WRITABLE DATA (the app directory is read-only at runtime)
+-----------------------------------------------------------------
+  /media/internal/.apkenv/tinydeathstar.apk/app_data/
+                                            the save (UserDefault.xml plus the
+                                            game's own json caches) and FMOD's
+                                            sound banks, which the game copies out
+                                            of the apk on first launch (~11 MB).
+  /media/internal/apkenv-com.apkenv.tinydeathstar.log
+                                            this app's stdout/stderr, rewritten on
+                                            every launch.
+
+LAUNCH SETTINGS (android/apkenv.env)
+------------------------------------
+  APKENV_PTHREAD_STACK_CLAMP=1    FMOD asks for thread stacks that are too small
+                                  for glibc; raise them.
+  APKENV_SPLASH_RGB / _SIZE       The loading screen payload above.
+
+SOURCE AND NOTES
+----------------
+  Module:  apkenv/modules/cocos2dx.c
+  Trail:   plan/TINY-DEATH-STAR.md  (contract table, what broke, the fixes)
+  Method:  PORTING-PLAYBOOK.md, android-port-shim.md

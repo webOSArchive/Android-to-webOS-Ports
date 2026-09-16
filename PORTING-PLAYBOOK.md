@@ -26,7 +26,7 @@ strings -n 5 apk/lib/armeabi/lib*.so | grep -iE 'jni|s3e|fmod|opensl|unity|mono|
 ```
 Decide: engine family (Walaber / Marmalade-Airplay / Unity+Mono / cocos2d…), GL version, audio path
 (FMOD / OpenSL / AudioTrack pump / MediaPlayer), how much of the game is Java (Dalvik-heavy = poor
-fit). Existing modules: `apkenv/modules/wheresmywater.c` (Walaber), `marmalade.c` (Marmalade AND
+fit). Existing modules: `apkenv/modules/cocos2dx.c` (Cocos2d-x 2.0.x), `wheresmywater.c` (Walaber), `marmalade.c` (Marmalade AND
 Airplay 4.x), plus upstream apkenv modules for other engines.
 
 **Know which binary is the game.** Marmalade/Airplay apps ship the *runtime* as `lib<name>.so` and
@@ -167,7 +167,11 @@ clears its result slot *before* the call — then an in-call answer is race-free
 empty strings where the game re-prompts.
 
 **Audio (three shapes seen).**
-- FMOD → `audio/fmod_pump.c` (AudioTrack-style pull pump; WMW).
+- FMOD → `audio/fmod_pump.c` (AudioTrack-style pull pump; WMW) **if the apk ships
+  `org.fmod.FMODAudioDevice`**. Without that class the game ran on FMOD's **OpenSL** output (FMOD Ex
+  4.4x autodetects: OpenSL if `dlopen("libOpenSLES.so")` succeeds, else AudioTrack).
+  `compat/opensles.c` is that sink (engine, output mix, buffer-queue player → `audio/audiotrack.c`).
+  Opt in with `apkenv_opensles_enable()` in `try_init`. Tiny Death Star, 2026-09-16.
 - **Engine mixes, Java just plays** → `audio/audiotrack.c` directly. Halfbrick Mortar's
   `MortarAudioMixerOut.Create()` + `WriteData([B/[S)` is a bare `AudioTrack(44100, STEREO,
   PCM_16BIT, MODE_STREAM)`; read the ctor for the rate/format instead of guessing, hand the bytes
@@ -621,3 +625,37 @@ computes `bufsize / (sizeofShort * channels)` on the line above the call.
 fine without letterboxing" is what prompted measuring the projection and finding that the 3D adapts
 while only the UI is hard-coded — which turned a blunt 16:10 letterbox into a 3:2 one that keeps
 most of the field of view. Neither would have come from the logs.
+
+---
+
+## Lessons from Tiny Death Star (Cocos2d-x 2.0.4), 2026-09-16
+
+Full trail: `plan/TINY-DEATH-STAR.md`. From triage to a fresh-install-verified package in one
+session, eleven device runs.
+
+**bionic headers inline stdio, so a glibc `FILE` is the wrong ABI.** bionic's `fileno`, `feof` and
+`ferror` are macros that read the `FILE` struct (`_file` is a `short` at offset 14). Code compiled
+against them, such as the gnustl `std::ofstream` statically linked into the game, never calls
+`fileno()`. apkenv's `fopen` returned glibc `FILE`s, whose offset 14 is the upper half of a pointer:
+0 on a fresh stream. SoundBoard's bank copy therefore wrote 11 MB to **fd 0**. The files were
+created, correctly named and empty; FMOD failed to load them and shut audio down, with no error
+anywhere. Opt in with `apkenv_bionic_stdio_enable()`: `fopen`/`fdopen`/`freopen`/`tmpfile` then
+return an 84-byte bionic-layout proxy with `_file` set and `_r`/`_w` = 0 (so the inline
+getc/putc paths always call out), and every FILE wrapper maps it back. **When a file the engine
+writes comes out empty, trace `write`/`writev` with their fds.** An open-only trace reports success
+all the way down (§3, again).
+
+**Cocos2d-x is a host whose Java does real work, and the module has to do it.**
+`Cocos2dxBitmap.createTextBitmap` rasterizes every `CCLabelTTF` with `android.graphics.Canvas`. The
+module does it with the PDK's FreeType (`-lfreetype`) and copies Java's layout arithmetic exactly:
+`FontMetricsInt` top/bottom from the font bbox, `measureText` wrapping including its quirks, and the
+alignment nibbles. Tiny Death Star renders nearly all its text with its own bitmap fonts, so check
+the log for `[COCOS-TEXT]` before investing in text fidelity. `Cocos2dxRenderer.onDrawFrame` also
+**sleeps out `setAnimationInterval`**. Without that, the loop rendered 45 unrequested frames a
+second, starved the audio thread, and dipped to 17 fps.
+
+**`recursive_mkdir(path)` creates only up to the last `/`.** Pass a trailing slash for a directory
+you hand the engine as `getWritablePath()`/`getDir()`.
+
+**Drive the first-run dialogs synthetically.** `APKENV_COCOS_AUTOTAP` tapped "NO" on the push
+notification prompt at frame 400, which got runs past it into the tutorial without a person.

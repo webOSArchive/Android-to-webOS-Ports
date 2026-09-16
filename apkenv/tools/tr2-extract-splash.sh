@@ -33,10 +33,14 @@ OUTDIR="${2:-packaging/extras/templerun2}"
 SIZE="${3:-768x1024}"
 MODE="${4:-cover}"
 
-ASSET=assets/bin/Data/splash.png
+# Other games: ASSET=<path in apk> NAME=<file prefix>, e.g. Tiny Death Star:
+#   ASSET=res/drawable-xhdpi/splash.png NAME=tinydeathstar \
+#   tools/tr2-extract-splash.sh packaging/tinydeathstar.apk packaging/extras/tinydeathstar 768x1024 contain
+ASSET="${ASSET:-assets/bin/Data/splash.png}"
+NAME="${NAME:-templerun2}"
 W=${SIZE%x*}
 H=${SIZE#*x}
-OUT="$OUTDIR/templerun2-splash-${W}x${H}-rgb.raw"
+OUT="$OUTDIR/${NAME}-splash-${W}x${H}-rgb.raw"
 
 [ -f "$APK" ] || { echo "no such apk: $APK" >&2; exit 1; }
 command -v ffmpeg >/dev/null || { echo "ffmpeg not found" >&2; exit 1; }
@@ -63,7 +67,7 @@ echo "$OUT  ${GOT} bytes (${W}x${H} RGB, $MODE)"
 
 cat <<USAGE
 
-Launch settings (packaging/templerun2/apkenv.env):
+Launch settings (packaging/$NAME/apkenv.env):
   APKENV_SPLASH_RGB=android/extras/$(basename "$OUT")
   APKENV_SPLASH_SIZE=${W}x${H}
 USAGE

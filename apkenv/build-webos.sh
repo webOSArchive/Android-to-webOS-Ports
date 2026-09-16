@@ -76,7 +76,7 @@ fi
 
 CFLAGS="-march=armv7-a -mfpu=neon -mfloat-abi=softfp -fsigned-char -O2 -fPIC"
 CFLAGS="$CFLAGS -nostdinc -isystem $GCC13_INC -isystem $PDK_SYSROOT_INC"
-CFLAGS="$CFLAGS -Iglshim -I$PDK/include -I$PDK/include/SDL -I."
+CFLAGS="$CFLAGS -Iglshim -I$PDK/include -I$PDK/include/SDL -I$PDK/include/freetype2 -I."
 CFLAGS="$CFLAGS -D_GNU_SOURCE -D_BSD_SOURCE -D_TIME_BITS=32 -D__webos__ -DLINUX"
 # NB: modern Khronos glshim headers already typedef GLchar — do NOT -DGLchar=char.
 CFLAGS="$CFLAGS -DAPKENV_GLES -DAPKENV_GLES2"
@@ -112,6 +112,7 @@ SOURCES="$SOURCES modules/angrybirds.c"
 SOURCES="$SOURCES modules/unity.c"
 SOURCES="$SOURCES modules/mortar.c"
 SOURCES="$SOURCES modules/eablast.c"
+SOURCES="$SOURCES modules/cocos2dx.c"
 
 OBJS=""
 for src in $SOURCES; do
@@ -149,7 +150,7 @@ $LD $OBJS -o apkenv \
     -L$PDK/device/lib -Ldevlibs \
     -Wl,--allow-shlib-undefined \
     -rdynamic -pthread -ldl -lz -lrt -lm \
-    -lSDL -lSDL_mixer -lpdl -lGLES_CM -lGLESv2 -lEGL -lstdc++
+    -lSDL -lSDL_mixer -lfreetype -lpdl -lGLES_CM -lGLESv2 -lEGL -lstdc++
 
 echo "DONE: $(file apkenv | cut -d, -f1-2)"
 echo "highest glibc sym: $(arm-linux-gnueabi-readelf -V apkenv 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -V | tail -1)"
