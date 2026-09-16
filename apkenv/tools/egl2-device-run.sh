@@ -36,11 +36,11 @@ $LD "$BUILD/egl2test.o" -o "$BUILD/egl2test" \
     -L$PDK/device/lib -Ldevlibs -Wl,--allow-shlib-undefined \
     -lSDL -lpdl -lEGL -lGLESv2 -lGLES_CM -lm -ldl -lpthread
 
-nc_run() { timeout 300 novacom run "file://$1" -- "${@:2}"; }
-nc_put() { timeout 300 novacom put "file://$2.new" < "$1" && \
-           timeout 60 novacom run file:///bin/mv -- "$2.new" "$2"; }
+nc_run() { timeout --foreground 300 novacom run "file://$1" -- "${@:2}"; }
+nc_put() { timeout --foreground 300 novacom put "file://$2.new" < "$1" && \
+           timeout --foreground 60 novacom run file:///bin/mv -- "$2.new" "$2"; }
 
-[ -n "$(timeout 20 novacom -l 2>/dev/null)" ] || {
+[ -n "$(timeout --foreground 20 novacom -l 2>/dev/null)" ] || {
     echo "ERROR: no device (or novacomd is wedged: sudo systemctl restart novacomd)" >&2
     exit 1; }
 

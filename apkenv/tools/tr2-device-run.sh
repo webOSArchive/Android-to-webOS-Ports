@@ -19,13 +19,13 @@ MANAGED_SRC=build/webos/tr2-managed
 # NB: the "--" separator belongs HERE only - do not repeat it at call sites,
 # or the target sees a literal "--" as its first argument (busybox then treats
 # the real flags as operands, in a read-only cwd of "/").
-nc_run() { timeout 300 novacom run "file://$1" -- "${@:2}"; }
+nc_run() { timeout --foreground 300 novacom run "file://$1" -- "${@:2}"; }
 # Always write to a temp name and mv into place: overwriting a binary that was
 # just executed fails with "file open failed" (ETXTBSY) on the device.
-nc_put() { timeout 300 novacom put "file://$2.new" < "$1" && \
-           timeout 60 novacom run file:///bin/mv -- "$2.new" "$2"; }
+nc_put() { timeout --foreground 300 novacom put "file://$2.new" < "$1" && \
+           timeout --foreground 60 novacom run file:///bin/mv -- "$2.new" "$2"; }
 
-[ -n "$(timeout 20 novacom -l 2>/dev/null)" ] || {
+[ -n "$(timeout --foreground 20 novacom -l 2>/dev/null)" ] || {
     echo "ERROR: no device (or novacomd is wedged: sudo systemctl restart novacomd)" >&2
     exit 1; }
 

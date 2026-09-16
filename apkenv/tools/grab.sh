@@ -18,7 +18,13 @@ TRIGGER=/media/internal/.apkenv/grab
 REMOTE=/media/internal/apkenv-grab.ppm
 
 # novacom reports a remote non-zero exit as "unexpected EOF from server".
-nc_run() { timeout 60 novacom run "file://$1" -- "${@:2}" 2>&1 || true; }
+# Every novacom call runs under `timeout --foreground` with stdin at /dev/null.
+# Plain `timeout` runs its child in a
+# background process group, and `novacom run` reads stdin to forward it, so from
+# an interactive terminal it got SIGTTIN, sat stopped (state T) and hung the
+# script forever (novacom put stalled the same way). Scripts driven from a
+# non-tty never showed it.
+nc_run() { timeout --foreground 60 novacom run "file://$1" -- "${@:2}" < /dev/null 2>&1 || true; }
 
 if [ -z "$(nc_run /bin/pidof apkenv | tr -dc '0-9')" ]; then
     echo "grab: no apkenv running on the device" >&2
@@ -30,10 +36,10 @@ tmp=$(mktemp --suffix=.ppm)
 trap 'rm -f "$tmp"' EXIT
 
 nc_run /bin/rm -f "$REMOTE" >/dev/null
-timeout 30 novacom put "file://$TRIGGER" < /dev/null
+timeout --foreground 30 novacom put "file://$TRIGGER" < /dev/null
 
 for _ in $(seq 1 15); do
-    if timeout 60 novacom get "file://$REMOTE" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+    if timeout --foreground 60 novacom get "file://$REMOTE" > "$tmp" < /dev/null 2>/dev/null && [ -s "$tmp" ]; then
         out="$OUTDIR/$NAME-$(date +%Y%m%d-%H%M%S).png"
         convert "$tmp" "$out"
         nc_run /bin/rm -f "$REMOTE" >/dev/null

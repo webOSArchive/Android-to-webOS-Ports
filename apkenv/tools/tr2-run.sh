@@ -23,7 +23,7 @@ LOGNAME="${1:-tr2-run}"
 WAIT="${WAIT:-30}"
 OUT=../plan/logs/$LOGNAME.log
 
-nc_run() { timeout 300 novacom run "file://$1" -- "${@:2}" 2>&1 || true; }
+nc_run() { timeout --foreground 300 novacom run "file://$1" -- "${@:2}" < /dev/null 2>&1 || true; }
 
 IPK=$(ls -t packaging/out/${APPID}_*.ipk | head -1)
 echo "== package: $IPK"
@@ -39,14 +39,14 @@ fi
 # several more while the device gunzips it at ~1 MB/s. A timeout that fires
 # mid-unpack would launch a half-installed app and pull a misleading log.
 echo "== installing"
-timeout "${INSTALL_TIMEOUT:-1800}" palm-install "$IPK" 2>&1 | tail -1
+timeout --foreground "${INSTALL_TIMEOUT:-1800}" palm-install "$IPK" 2>&1 | tail -1
 
 echo "== launching"
-timeout 120 palm-launch $APPID 2>&1 | tail -1
+timeout --foreground 120 palm-launch $APPID 2>&1 | tail -1
 echo "== waiting ${WAIT}s"
 nc_run /bin/sleep "$WAIT" >/dev/null
 
 echo "== pulling log -> $OUT"
-timeout 120 novacom get "file:///media/internal/apkenv-$APPID.log" > "$OUT" 2>/dev/null
+timeout --foreground 120 novacom get "file:///media/internal/apkenv-$APPID.log" > "$OUT" < /dev/null 2>/dev/null
 echo "== $(wc -l < "$OUT") lines"
 grep -anE "EGLWARM|EGLSHIM\] eglCreateContext ->|GLES.*table:|webos_init:|GLSL|\[UN-TOUCH\]" "$OUT" | head -20
