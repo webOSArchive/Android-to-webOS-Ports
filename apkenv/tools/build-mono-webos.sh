@@ -16,17 +16,37 @@
 # Output: hostlibs/webos/libmono-webos.so       (stripped, ships to the device)
 #         build/webos/libmono-webos.so.debug    (unstripped, for addr2line)
 #
+# Profiles (first argument):
+#   unity3.5 (default)  Temple Run 2 / Aralon. Output as above. Shipped - frozen.
+#   unity4.2            RoboCop (Unity 4.2.2f1). Same Mono 2.6.5 / corlib 82, plus
+#                       the Unity 4.2 private exports libunity 4.2 imports
+#                       (mono_unity_class_is_*, mono_unity_liveness_*). Output:
+#                       hostlibs/unity42/libmono-unity42.so (+ build/webos/*.debug).
+#                       A separate file so the shipped ports' runtime is untouched.
+#
 # Prereqs: PalmPDK at /opt/PalmPDK, host autoconf/automake/libtool/perl, git.
 set -e
 cd "$(dirname "$0")/.."
 APKENV="$(pwd)"
 
 MONO_REPO=https://github.com/Unity-Technologies/mono.git
-MONO_BRANCH=unity3.5
-# Verified pin: Mono 2.6.5, MONO_CORLIB_VERSION 82, matches Unity 3.5.7f6.
-MONO_COMMIT=64c3378a67376d089f8ad6f7b6cad4619fdaefa9
+PROFILE="${1:-unity3.5}"
+case "$PROFILE" in
+unity3.5)
+    MONO_BRANCH=unity3.5
+    # Verified pin: Mono 2.6.5, MONO_CORLIB_VERSION 82, matches Unity 3.5.7f6.
+    MONO_COMMIT=64c3378a67376d089f8ad6f7b6cad4619fdaefa9
+    OUTDIR=hostlibs/webos; OUTNAME=libmono-webos.so
+    IMPORTS=../plan/tr2-mono-imports.txt ;;
+unity4.2)
+    MONO_BRANCH=unity-4.2
+    MONO_COMMIT=ac09c9bb53471083b961dbb95ec747176bad6aa9
+    OUTDIR=hostlibs/unity42; OUTNAME=libmono-unity42.so
+    IMPORTS=../plan/robocop-mono-imports.txt ;;
+*) echo "unknown profile: $PROFILE (unity3.5|unity4.2)" >&2; exit 2 ;;
+esac
 
-SRCDIR="${MONO_SRC_DIR:-${TMPDIR:-/tmp}/mono-unity3.5}"
+SRCDIR="${MONO_SRC_DIR:-${TMPDIR:-/tmp}/mono-$PROFILE}"
 PDK=/opt/PalmPDK/arm-gcc
 P=$PDK/bin/arm-none-linux-gnueabi
 
@@ -102,15 +122,16 @@ LIB=mono/mini/.libs/libmono.so.0.0.0
 [ -f "$LIB" ] || { echo "ERROR: $LIB not produced" >&2; exit 1; }
 
 # ---- 5. install + verify ---------------------------------------------------
-mkdir -p "$APKENV/hostlibs/webos" "$APKENV/build/webos"
-cp "$LIB" "$APKENV/build/webos/libmono-webos.so.debug"
-"${P}-strip" -o "$APKENV/hostlibs/webos/libmono-webos.so" "$LIB"
+OUT="$APKENV/$OUTDIR/$OUTNAME"
+mkdir -p "$APKENV/$OUTDIR" "$APKENV/build/webos"
+cp "$LIB" "$APKENV/build/webos/$OUTNAME.debug"
+"${P}-strip" -o "$OUT" "$LIB"
 
 echo
 echo "=== verify ==="
-file "$APKENV/hostlibs/webos/libmono-webos.so"
+file "$OUT"
 echo -n "max glibc symbol version: "
-readelf -V --dyn-syms "$APKENV/hostlibs/webos/libmono-webos.so" \
+readelf -V --dyn-syms "$OUT" \
     | grep -oE "GLIBC_[0-9.]+" | sort -uV | tail -1
-readelf -d "$APKENV/hostlibs/webos/libmono-webos.so" | grep NEEDED
-"$APKENV/tools/check-mono-exports.sh" "$APKENV/hostlibs/webos/libmono-webos.so"
+readelf -d "$OUT" | grep NEEDED
+"$APKENV/tools/check-mono-exports.sh" "$OUT" "$APKENV/$IMPORTS"

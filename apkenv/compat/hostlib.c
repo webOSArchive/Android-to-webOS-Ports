@@ -166,3 +166,50 @@ apkenv_hostlib_bridge(const char *path, const char *libname,
 
     return 0;
 }
+
+int
+apkenv_hostlib_bridge_optional(const char *libname,
+                               const char *const *symbols, size_t n)
+{
+    struct _hook *table;
+    void *handle = NULL;
+    size_t i;
+    size_t resolved = 0;
+
+    for (i = 0; i < (size_t)hostlibs_count; i++)
+        if (strcmp(hostlibs[i].libname, libname) == 0)
+            handle = hostlibs[i].handle;
+    if (handle == NULL || symbols == NULL)
+        return -1;
+    if (n == 0)
+        return 0;
+
+    table = calloc(n, sizeof(struct _hook));
+    if (table == NULL)
+        return -1;
+
+    for (i = 0; i < n; i++) {
+        void *addr;
+
+        if (symbols[i] == NULL || apkenv_get_hooked_symbol(symbols[i], 0) != NULL)
+            continue;
+        dlerror();
+        addr = dlsym(handle, symbols[i]);
+        if (addr == NULL && dlerror() != NULL)
+            continue;
+        table[resolved].name = symbols[i];
+        table[resolved].func = addr;
+        resolved++;
+    }
+
+    if (resolved != 0 && register_hooks(table, resolved) != 0) {
+        fprintf(stderr, "[HOSTLIB] register_hooks() failed for %s optional set\n", libname);
+        free(table);
+        return -1;
+    }
+    free(table);
+
+    fprintf(stderr, "[HOSTLIB] %s: %zu/%zu optional symbols bridged\n",
+            libname, resolved, n);
+    return (int)resolved;
+}

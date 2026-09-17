@@ -38,6 +38,22 @@
 int apkenv_hostlib_bridge(const char *path, const char *libname,
                           const char *const *symbols, size_t n);
 
+/**
+ * Register `symbols` from an ALREADY bridged `libname` as hooks, silently
+ * skipping any the loaded host library does not export.
+ *
+ * For symbols that only a newer runtime build carries (RoboCop's Unity 4.2 Mono
+ * exports mono_unity_liveness_* that the Unity 3.5 runtime of TR2/Aralon never
+ * had). The required set passed to apkenv_hostlib_bridge() stays fatal; an
+ * optional name an engine really imports and the runtime lacks still fails
+ * loudly, at relocation ("cannot locate"), because the apk's own copy of the
+ * library is blacklisted once a host library provides it.
+ *
+ * Returns the number of symbols registered, or -1 on error.
+ */
+int apkenv_hostlib_bridge_optional(const char *libname,
+                                   const char *const *symbols, size_t n);
+
 /** Non-zero once at least one host library has been bridged. */
 int apkenv_hostlib_active(void);
 

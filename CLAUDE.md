@@ -34,10 +34,20 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
   The game's gnustl `std::ofstream` wrote its 11 MB of sound banks to **stdin** and left empty files.
   Only a `writev` trace showed it. Host note: `gcc-13-arm-linux-gnueabi` was apt-removed on
   2026-09-15; reinstall it for `build-webos.sh`.
-- **Next up: RoboCop 3.0.6 (Glu, Unity 4.2.2f1 + Mono), scoped but NOT started (2026-09-16):**
-  `android-candidates/robocop_3.0.6.apk` + `main.1309.com.glu.robocop.obb` (299 MB zip). **Runs offline
-  under ACL** on the TouchPad (user-confirmed), so ACL is the reference. Scope in `plan/ROBOCOP-SCOPING.md`.
-  Main gap: the host Mono lacks 6 `mono_unity_*` symbols libunity 4.2 imports.
+- **RoboCop 3.0.6 (Glu, Unity 4.2.2f1 + Mono) — RELEASE 1.0.0 built in one session (2026-09-17)**:
+  `apkenv/packaging/out/com.apkenv.robocop_1.0.0_all.ipk` (94.6 MB, OBB bundled). User-confirmed on the
+  panel: touch, tutorial, music, aiming, SFX, a full mission, pause/resume and swipe-away; 29.7 fps
+  (Unity's 30 cap), zero managed exceptions. The release binary is byte-identical to the tested one;
+  a fresh install from the package has not been run. Trail: `plan/ROBOCOP.md`; stage the apk with `apkenv/tools/rc-stage.sh` (the real engine is in
+  the OBB). **Systemic pieces, all gated to Unity 4.2 or opt-in:** a Unity 4.2 host Mono
+  (`tools/build-mono-webos.sh unity4.2`, exports identical to the game's) with required/optional
+  bridge symbols so TR2/Aralon never abort; the **jvalue[] ("A") JNI forms** Unity 4.2's
+  AndroidJavaObject uses; a **host WWW** (`nativeInitWWW` + `com.unity3d.player.WWW`: file:// and
+  jar:file:// served, network fails offline-style — apkenv had no WWW at all); a **Mono P/Invoke
+  fallback** that loads apk libraries through apkenv's linker and runs their `JNI_OnLoad`;
+  `APKENV_UNITY_OBB_CODEPATH`, `APKENV_MONO_TRACE`. **Lessons:** managed file I/O bypasses apkenv's
+  tracer (host Mono calls glibc) — use the device's `strace`; a "slow internet" screen offline can mean
+  a missing LOCAL transport.
 - **Dead Space (EA Mobile, BLAST engine) — RELEASED 1.0.0 (2026-09-15)**, fresh-installed from the
   package and verified on a clean profile: `apkenv/packaging/out/com.apkenv.deadspace_1.0.0_all.ipk`
   (174 MB). Launcher icon, 3:2 letterbox (1024x682), menus, 3D intro and cutscenes, audio with zero

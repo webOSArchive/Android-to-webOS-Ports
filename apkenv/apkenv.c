@@ -649,6 +649,67 @@ seed_data_dir(const char *seed_src, const char *main_data_dir, const char *apk_p
     printf("apkenv: seeded %lu files\n", n);
 }
 
+/* P/Invoke into the apk's own (bionic) libraries. With a host Mono, a
+ * [DllImport("gwallet")] reaches Mono's glibc dlopen(), which cannot load a
+ * bionic .so - RoboCop's GWallet type initializer then threw
+ * DllNotFoundException and aborted Tutorial.Init (robocop-r11). Mono consults
+ * registered fallback handlers when its own dlopen fails; ours loads through
+ * apkenv's linker. Registered only if the runtime exports
+ * mono_dl_fallback_register (the Unity 4.2 runtime; not the shipped 3.5 one). */
+static void *
+apkenv_mono_dl_load(const char *name, int flags, char **err, void *user_data)
+{
+    char lib[256];
+    const char *base;
+    void *h;
+
+    if (name == NULL)
+        return NULL;
+    base = strrchr(name, '/');
+    base = base != NULL ? base + 1 : name;
+    /* Mono probes for AOT images of every assembly ("Foo.dll.so"); those are
+     * never apk libraries. */
+    if (strstr(base, ".dll") != NULL)
+        return NULL;
+    if (strstr(base, ".so") != NULL)
+        snprintf(lib, sizeof(lib), "%s", base);
+    else if (strncmp(base, "lib", 3) == 0)
+        snprintf(lib, sizeof(lib), "%s.so", base);
+    else
+        snprintf(lib, sizeof(lib), "lib%s.so", base);
+    h = apkenv_android_dlopen(lib, RTLD_LAZY);
+    printf("[HOSTLIB] mono P/Invoke fallback: '%s' -> %s %s\n", name, lib, h ? "loaded" : "not found");
+    /* What Java's System.loadLibrary does next: run JNI_OnLoad, once. That is
+     * where a plugin keeps its JavaVM (libgwallet dereferenced a NULL one in
+     * GWalletCallbackJNI::initialise without it, robocop-r12). */
+    if (h != NULL) {
+        static void *onloaded[16];
+        int i, seen = 0;
+        for (i = 0; i < 16 && onloaded[i] != NULL; i++)
+            if (onloaded[i] == h) seen = 1;
+        if (!seen && i < 16) {
+            jint (*onload)(JavaVM *, void *) = apkenv_android_dlsym(h, "JNI_OnLoad");
+            onloaded[i] = h;
+            struct GlobalState *g = &global;
+            if (onload != NULL)
+                printf("[HOSTLIB] %s: JNI_OnLoad -> 0x%x\n", lib, (unsigned)onload(VM(g), NULL));
+        }
+    }
+    return h;
+}
+
+static void *
+apkenv_mono_dl_symbol(void *handle, const char *name, char **err, void *user_data)
+{
+    return apkenv_android_dlsym(handle, name);
+}
+
+static void *
+apkenv_mono_dl_close(void *handle, void *user_data)
+{
+    return NULL;
+}
+
 int main(int argc, char **argv)
 {
     intptr_t base = 0xdeadbeef;
@@ -970,6 +1031,28 @@ int main(int argc, char **argv)
                 printf("ERROR: APKENV_HOST_MONO bridge failed (%s).\n", host_mono);
                 exit(3);
             }
+            /* APKENV_MONO_TRACE=<spec>: Mono's --trace, e.g. "N:Glu" traces every
+             * call in that namespace WITH its string arguments, plus exceptions.
+             * Diagnostic only; slow for broad specs. Must precede mono_jit_init. */
+            {
+                const char *spec = getenv("APKENV_MONO_TRACE");
+                int (*set_trace)(const char *) = apkenv_hostlib_dlsym("libmono.so",
+                                                                      "mono_jit_set_trace_options");
+                if (spec != NULL && *spec != '\0' && set_trace != NULL)
+                    printf("[HOSTLIB] mono trace '%s' -> %d\n", spec, set_trace(spec));
+            }
+            {
+                void *(*fb_register)(void *, void *, void *, void *) =
+                    apkenv_hostlib_dlsym("libmono.so", "mono_dl_fallback_register");
+                if (fb_register != NULL) {
+                    fb_register(apkenv_mono_dl_load, apkenv_mono_dl_symbol,
+                                apkenv_mono_dl_close, NULL);
+                    printf("[HOSTLIB] mono P/Invoke fallback -> apkenv linker registered\n");
+                }
+            }
+            apkenv_hostlib_bridge_optional("libmono.so",
+                                           mono_bridge_symbols_optional,
+                                           MONO_BRIDGE_OPTIONAL_COUNT - 1 /* trailing NULL */);
         }
     }
     

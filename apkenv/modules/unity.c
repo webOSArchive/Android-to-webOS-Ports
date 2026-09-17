@@ -33,6 +33,7 @@
  **/
 
 #include "common.h"
+#include "../apklib/apklib.h"
 #include "../audio/fmod_pump.h"
 #include <string.h>
 #include <stdio.h>
@@ -68,6 +69,17 @@ un_trace_unhandled(const char *kind, jmethodID method)
         }
     fprintf(stderr, "[UN-JNI] UNHANDLED %s %s%s\n", kind, method->name, method->sig ? method->sig : "");
     if (un_trace_n < UN_TRACE_MAX) { un_trace[un_trace_n].name = strdup(method->name); un_trace[un_trace_n].n = 1; un_trace_n++; }
+}
+/* A call through a jmethodID that GetMethodID never produced (NULL): the
+ * engine looked a host method up, got nothing, and called it anyway. It used to
+ * fault on method->name (robocop-r5: SIGSEGV addr=0x4 in CallVoidMethodV). The
+ * caller's address names the engine site. */
+static void
+un_null_method(const char *kind, void *ra)
+{
+    static int n;
+    if (n++ < 20)
+        fprintf(stderr, "[UN-JNI] %s call with a NULL jmethodID from %p - ignored\n", kind, ra);
 }
 #include <malloc.h>
 #include <dlfcn.h>
@@ -114,6 +126,11 @@ static const char *un_pkg = "com.unity3d.player";
  * un_first_frame_tail). Detected from the engine's own native table, not from a
  * version string: nativeSetInputCanceled(Z) exists only in the Unity 4 host. */
 static int un_unity4 = 0;
+/* Unity 4.2 host: jvalue[] AndroidJavaObject calls (see the 4.2 section). */
+static int un_unity42 = 0;
+/* APKENV_UNITY_OBB_CODEPATH: the OBB stands in for the apk (see unity_init). */
+static int un_obb_codepath = 0;
+static const char *un_codepath = NULL;
 
 
 static struct GlobalState* global;
@@ -393,6 +410,17 @@ un_jstr(JNIEnv *env, void *arg)
  * Temple Run 2 path keeps its exact behaviour until it gets a regression run. */
 #define UN_REFL_MAGIC 0x55524631u
 #define UN_OBJ_MAGIC  0x554f424au
+/* The Java object is the Thread: AndroidWWW joins it before freeing the
+ * request, so join() must really wait - returning early let the engine free
+ * state our worker was still calling back into. Begins like un_obj. */
+#define UN_WWW_MAGIC 0x55575757u
+struct un_www_obj {
+    jclass clazz;
+    jfieldID field;
+    unsigned magic;
+    pthread_t thread;
+    int joined;
+};
 
 /* Both begin like dummy_jobject {clazz, field}, so unity_jnienv_GetObjectClass
  * works on them unchanged. */
@@ -455,13 +483,47 @@ un_refl_log(const char *what, const char *cls, const char *name, const char *ext
 /* ReflectionHelper.getMethodID(Class, String name, String sig, boolean static)
  *                 .getFieldID (Class, String name, String sig, boolean static)
  *                 .getConstructorID(Class, String sig) */
+/* Argument cursor over either calling form: the va_list ("V") entry points or
+ * the jvalue[] ("A") ones. Unity 4.0 (Aralon) reached ReflectionHelper through
+ * the V forms; Unity 4.2 (RoboCop) makes EVERY AndroidJavaObject call through the
+ * A forms, which jni/jnienv.c answers with NULL/0 - so Class.forName came back
+ * NULL and the Glu plugin layer threw in Boot.Awake (plan/logs/robocop-r2.log). */
+struct un_args {
+    va_list *ap;
+    const jvalue *jv;
+    int i;
+};
+
+static void *
+un_arg_ptr(struct un_args *a)
+{
+    if (a->jv != NULL) return a->jv[a->i++].l;
+    return a->ap != NULL ? va_arg(*a->ap, void *) : NULL;
+}
+
+static int un_java_call(JNIEnv *env, const char *cls, jobject obj, jmethodID m,
+                        struct un_args *a, jvalue *out);
+static void un_java_unanswered(const char *kind, const char *cls, jmethodID m);
+static jobject un_standin(const char *kind, const char *cls, jmethodID m);
+static int un_endswith(const char *s, const char *suffix);
+
+/* java.lang.Class objects made by Class.forName stand in for the jclass of
+ * AndroidJavaClass, so a "class" may be either kind: name the one described. */
+static const char *
+un_described(jclass c)
+{
+    if (un_is(c, UN_OBJ_MAGIC) && ((struct un_obj *)c)->described != NULL)
+        return ((struct un_obj *)c)->described;
+    return un_clsname(c);
+}
+
 static jobject
-un_reflect(JNIEnv *env, jmethodID method, va_list *ap)
+un_reflect(JNIEnv *env, jmethodID method, struct un_args *a)
 {
     int ctor = strcmp(method->name, "getConstructorID") == 0;
-    jclass cls = va_arg(*ap, jclass);
-    const char *name = ctor ? "<init>" : un_jstr(env, va_arg(*ap, void *));
-    const char *sig = un_jstr(env, va_arg(*ap, void *));
+    jclass cls = un_arg_ptr(a);
+    const char *name = ctor ? "<init>" : un_jstr(env, un_arg_ptr(a));
+    const char *sig = un_jstr(env, un_arg_ptr(a));
     struct un_refl *r = calloc(1, sizeof(*r));
 
     r->clazz = un_class(ctor ? "java/lang/reflect/Constructor" :
@@ -471,7 +533,7 @@ un_reflect(JNIEnv *env, jmethodID method, va_list *ap)
     r->id.clazz = cls;
     r->id.name = strdup(name ? name : "?");
     r->id.sig = strdup(sig ? sig : "");
-    un_refl_log(method->name, un_clsname(cls), r->id.name, r->id.sig);
+    un_refl_log(method->name, un_described(cls), r->id.name, r->id.sig);
     return r;
 }
 
@@ -487,10 +549,22 @@ un_reflect(JNIEnv *env, jmethodID method, va_list *ap)
 static jobject
 unity_call_object(JNIEnv *env, jobject obj, jmethodID method, va_list *ap)
 {
+    if (method == NULL) { un_null_method("obj", __builtin_return_address(0)); return NULL; }
     /* Unity 4 AndroidJavaObject chains (see the bridge above):
      *   currentActivity.getWindowManager().getDefaultDisplay().getMetrics(dm)
      * and getClass().getName(), which Unity calls on every AndroidJavaObject
      * argument to build the JNI signature it then looks up. */
+    if (un_unity42 && ap != NULL) {
+        va_list copy;
+        struct un_args a = { &copy, NULL, 0 };
+        jvalue v;
+        int ok;
+        va_copy(copy, *ap);
+        ok = un_java_call(env, obj != NULL ? un_described(((dummy_jobject *)obj)->clazz) : "?",
+                          obj, method, &a, &v);
+        va_end(copy);
+        if (ok) return v.l;
+    }
     if (un_unity4) {
         if (strcmp(method->name,"getWindowManager")==0) {
             un_refl_log("call", "Activity", method->name, "-> WindowManager");
@@ -540,8 +614,22 @@ unity_call_object(JNIEnv *env, jobject obj, jmethodID method, va_list *ap)
         return (*env)->NewIntArray(env, 0);
 
     if (strcmp(method->name,"getPackageCodePath")==0)
-        return (*env)->NewStringUTF(env, global->apk_filename);
+        return (*env)->NewStringUTF(env, un_codepath ? un_codepath : global->apk_filename);
 
+    /* Unity 4.2: Android's <data>/files and <data>/cache, real directories
+     * (persistentDataPath / temporaryCachePath; the content pipeline commits
+     * its A/B resolution and caches bundles there). Older hosts: unchanged. */
+    if (un_unity42 && (strcmp(method->name,"getFilesDir")==0 || strcmp(method->name,"getCacheDir")==0)) {
+        char path[PATH_MAX];
+        size_t l;
+        snprintf(path, sizeof(path), "%s", un_home);
+        l = strlen(path);
+        while (l > 1 && path[l - 1] == '/') path[--l] = '\0';
+        snprintf(path + l, sizeof(path) - l, "/%s",
+                 strcmp(method->name,"getFilesDir")==0 ? "files" : "cache");
+        mkdir(path, 0755);
+        return (*env)->NewStringUTF(env, path);
+    }
     if (strcmp(method->name,"getFilesDir")==0 || strcmp(method->name,"getCacheDir")==0)
         return (*env)->NewStringUTF(env, un_home);
     if (strcmp(method->name,"getPackageName")==0)
@@ -574,16 +662,29 @@ jobject unity_jnienv_CallObjectMethodV(JNIEnv* env, jobject p1, jmethodID p2, va
 jobject
 unity_call_static_object(JNIEnv *env, jclass p1, jmethodID p2, va_list *ap)
 {
+    if (p2 == NULL) { un_null_method("staticobj", __builtin_return_address(0)); return NULL; }
     struct dummy_jclass* clazz = p1;
     jmethodID method = p2;
 
     MODULE_DEBUG_PRINTF("unity_call_static_object(%s,%s)\n",clazz->name,method->name);
 
+    if (un_unity42 && ap != NULL) {
+        va_list copy;
+        struct un_args a = { &copy, NULL, 0 };
+        jvalue v;
+        int ok;
+        va_copy(copy, *ap);
+        ok = un_java_call(env, un_described(p1), NULL, method, &a, &v);
+        va_end(copy);
+        if (ok) return v.l;
+    }
     /* com.unity3d.player.ReflectionHelper - see the AndroidJavaObject bridge. */
     if (un_unity4 && ap != NULL &&
         (strcmp(method->name,"getMethodID")==0 || strcmp(method->name,"getFieldID")==0 ||
-         strcmp(method->name,"getConstructorID")==0))
-        return un_reflect(env, method, ap);
+         strcmp(method->name,"getConstructorID")==0)) {
+        struct un_args a = { ap, NULL, 0 };
+        return un_reflect(env, method, &a);
+    }
 
     if (strcmp(method->name,"getProperty")==0) {
         //jstring property = va_arg(p3,jstring);
@@ -594,7 +695,7 @@ unity_call_static_object(JNIEnv *env, jclass p1, jmethodID p2, va_list *ap)
     }
     else
     if (strcmp(method->name,"getPackageCodePath")==0) {
-        return (*env)->NewStringUTF(env, global->apk_filename);
+        return (*env)->NewStringUTF(env, un_codepath ? un_codepath : global->apk_filename);
     }
 
     un_trace_unhandled("staticobj", method);
@@ -621,6 +722,17 @@ unity_jnienv_CallStaticObjectMethodV(JNIEnv* env, jclass p1, jmethodID p2, va_li
 static void
 unity_jnienv_CallVoidMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
 {
+    if (p2 == NULL) { un_null_method("void", __builtin_return_address(0)); return ; }
+    if (un_unity42) {
+        va_list copy;
+        struct un_args a = { &copy, NULL, 0 };
+        jvalue v;
+        int ok;
+        va_copy(copy, p3);
+        ok = un_java_call(env, p1 != NULL ? un_described(((dummy_jobject *)p1)->clazz) : "?", p1, p2, &a, &v);
+        va_end(copy);
+        if (ok) return;
+    }
     /* PlayerPrefs.Save()/Flush() - the game's explicit "persist now". */
     if (strcmp(p2->name,"Flush")==0 || strcmp(p2->name,"Save")==0 ||
         strcmp(p2->name,"Sync")==0) {
@@ -710,6 +822,7 @@ un_portrait(void)
 static jint
 unity_jnienv_CallIntMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
 {
+    if (p2 == NULL) { un_null_method("int", __builtin_return_address(0)); return 0; }
     if (strcmp(p2->name,"getDeviceOrientation")==0) return 0;
     /* Surface.ROTATION_0: the surface we hand the engine is already the right
      * way up for the orientation we report, because we rotate at present time. */
@@ -725,6 +838,9 @@ unity_jnienv_CallIntMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
      * time for portrait), so it is 0 either way. No cameras on this path. */
     if (strcmp(p2->name,"getScreenOrientationAngle")==0) return 0;
     if (strcmp(p2->name,"getCameraOrientation")==0) return 0;
+    /* Unity 4.2: Display handed over by nativeSetDefaultDisplay. */
+    if (un_unity42 && strcmp(p2->name,"getWidth")==0) return un_screen_w;
+    if (un_unity42 && strcmp(p2->name,"getHeight")==0) return un_screen_h;
 
     if (strcmp(p2->name,"GetInt")==0) {          /* PlayerPrefs.GetInt(key, def) */
         const char *key = un_jstr(env, va_arg(p3, void *));
@@ -739,6 +855,17 @@ unity_jnienv_CallIntMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
 static jboolean
 unity_jnienv_CallBooleanMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
 {
+    if (p2 == NULL) { un_null_method("bool", __builtin_return_address(0)); return 0; }
+    if (un_unity42) {
+        va_list copy;
+        struct un_args a = { &copy, NULL, 0 };
+        jvalue v;
+        int ok;
+        va_copy(copy, p3);
+        ok = un_java_call(env, p1 != NULL ? un_described(((dummy_jobject *)p1)->clazz) : "?", p1, p2, &a, &v);
+        va_end(copy);
+        if (ok) return v.z;
+    }
     /* Every PlayerPrefs setter must return TRUE; managed PlayerPrefs.SetX()
      * throws PlayerPrefsException on false, which kills the caller's Awake(). */
     if (strcmp(p2->name,"SetInt")==0) {
@@ -781,6 +908,7 @@ unity_jnienv_CallBooleanMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p
 static jfloat
 unity_jnienv_CallFloatMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
 {
+    if (p2 == NULL) { un_null_method("float", __builtin_return_address(0)); return 0; }
     if (strcmp(p2->name,"getScreenDPI")==0) return 132.0f;
 
     if (strcmp(p2->name,"GetFloat")==0) {        /* PlayerPrefs.GetFloat(key, def) */
@@ -839,20 +967,32 @@ unity_jnienv_FromReflectedField(JNIEnv *env, jobject f)
 static jobject
 un_construct(jclass cls, jmethodID m)
 {
-    const char *c = cls != NULL ? un_clsname(cls) : (m != NULL ? un_clsname(m->clazz) : "?");
+    /* un_described: on Unity 4.2 the class is a Class.forName object, and reading
+     * it as a dummy_jclass named the new object after heap garbage (robocop-r4). */
+    const char *c = cls != NULL ? un_described(cls) : (m != NULL ? un_described(m->clazz) : "?");
     un_refl_log("new", c, "<init>", (m != NULL && m->sig != NULL) ? m->sig : "");
     return un_new_obj(c, NULL);
 }
 
+static jobject un_www_new(JNIEnv *env, jclass cls, struct un_args *a);
+
 static jobject
 unity_jnienv_NewObjectA(JNIEnv *env, jclass cls, jmethodID m, jvalue *args)
 {
+    if (un_unity42 && un_endswith(un_described(cls), "unity3d/player/WWW")) {
+        struct un_args a = { NULL, args, 0 };
+        return un_www_new(env, cls, &a);
+    }
     return un_unity4 ? un_construct(cls, m) : NULL;           /* jnienv.c: NULL */
 }
 
 static jobject
 unity_jnienv_NewObjectV(JNIEnv *env, jclass cls, jmethodID m, va_list args)
 {
+    if (un_unity42 && un_endswith(un_described(cls), "unity3d/player/WWW")) {
+        struct un_args a = { &args, NULL, 0 };
+        return un_www_new(env, cls, &a);
+    }
     return un_unity4 ? un_construct(cls, m) : GLOBAL_J(env);  /* jnienv.c: sentinel */
 }
 
@@ -863,6 +1003,16 @@ unity_jnienv_CallObjectMethodA(JNIEnv *env, jobject obj, jmethodID m, jvalue *ar
 {
     if (!un_unity4)
         return NULL;                                           /* jnienv.c: NULL */
+    if (un_unity42) {
+        struct un_args a = { NULL, args, 0 };
+        jvalue v;
+        const char *c = obj != NULL ? un_described(((dummy_jobject *)obj)->clazz) : "?";
+        jobject r;
+        if (un_java_call(env, c, obj, m, &a, &v))
+            return v.l;
+        r = unity_call_object(env, obj, m, NULL);
+        return r != NULL ? r : un_standin("Object", c, m);
+    }
     return unity_call_object(env, obj, m, NULL);
 }
 
@@ -873,6 +1023,14 @@ unity_jnienv_CallVoidMethodA(JNIEnv *env, jobject obj, jmethodID m, jvalue *args
         return;
     if (strcmp(m->name, "getMetrics") == 0) {
         un_refl_log("call", "Display", "getMetrics", "(fields answered on read)");
+        return;
+    }
+    if (un_unity42) {
+        struct un_args a = { NULL, args, 0 };
+        jvalue v;
+        const char *c = obj != NULL ? un_described(((dummy_jobject *)obj)->clazz) : "?";
+        if (!un_java_call(env, c, obj, m, &a, &v))
+            un_java_unanswered("Void", c, m);
         return;
     }
     un_trace_unhandled("voidA", m);
@@ -930,6 +1088,517 @@ unity_jnienv_GetFloatField(JNIEnv *env, jobject obj, jfieldID f)
 /**
     native calls
  */
+
+/* ---- Unity 4.2: the jvalue[] ("A") JNI forms + the Glu plugin layer -------
+ * Gated on un_unity42 (the host has nativeSetDefaultDisplay, new in 4.2), so
+ * Aralon's Unity 4.0 path keeps exactly what it shipped with.
+ *
+ * Every AndroidJavaObject/AndroidJavaClass call arrives here as (class, method
+ * name, jvalue[]). Anything we do not answer is logged once as [UN-JAVA] with
+ * its class and signature, so the next gap names itself.
+ * Answers and their evidence: plan/ROBOCOP.md (static contract, 2026-09-17). */
+static int
+un_endswith(const char *s, const char *suffix)
+{
+    size_t ls = s ? strlen(s) : 0, lx = strlen(suffix);
+    return ls >= lx && strcmp(s + ls - lx, suffix) == 0;
+}
+
+static void
+un_java_unanswered(const char *kind, const char *cls, jmethodID m)
+{
+    #define UN_JAVA_SEEN_MAX 256
+    static char *seen[UN_JAVA_SEEN_MAX];
+    static int n;
+    char key[512];
+    int i;
+    snprintf(key, sizeof(key), "%s.%s%s", cls ? cls : "?", m->name, m->sig ? m->sig : "");
+    for (i = 0; i < n; i++)
+        if (strcmp(seen[i], key) == 0)
+            return;
+    if (n < UN_JAVA_SEEN_MAX) seen[n++] = strdup(key);
+    fprintf(stderr, "[UN-JAVA] unanswered %s %s\n", kind, key);
+}
+
+/* Glu's AJTUtil.GetRunCount: launches so far, counted by the host (Glu's Java
+ * kept it in SharedPreferences). 0 forever would keep the first-launch flows. */
+static int un_glu_runcount = 0;
+#define UN_GLU_RUNCOUNT_KEY "apkenv.glu.runcount"
+
+static const char *
+un_env_or(const char *name, const char *def)
+{
+    const char *e = getenv(name);
+    return (e != NULL && e[0] != '\0') ? e : def;
+}
+
+/* Returns 1 and fills *out if answered. `cls` is the Java class the call is on
+ * (static: the class; instance: the object's class), slash-separated. */
+static int
+un_java_call(JNIEnv *env, const char *cls, jobject obj, jmethodID m,
+             struct un_args *a, jvalue *out)
+{
+    const char *n = m->name;
+    out->j = 0;
+
+    /* AndroidJavaClass(name) = Class.forName(name): a Class object that
+     * describes the class, used as the jclass of every later static call. */
+    if (strcmp(n, "forName") == 0 && un_endswith(cls, "java/lang/Class")) {
+        const char *name = un_jstr(env, un_arg_ptr(a));
+        char slashed[256], *p;
+        snprintf(slashed, sizeof(slashed), "%s", name ? name : "?");
+        for (p = slashed; *p; p++) if (*p == '.') *p = '/';
+        un_refl_log("call", "Class", "forName", slashed);
+        out->l = un_new_obj("java/lang/Class", slashed);
+        return 1;
+    }
+
+    /* WWW threads (see the host WWW section). */
+    if (un_is(obj, UN_WWW_MAGIC) && strcmp(n, "join") == 0) {
+        struct un_www_obj *w = (struct un_www_obj *)obj;
+        if (!w->joined) { pthread_join(w->thread, NULL); w->joined = 1; }
+        return 1;
+    }
+    if (un_is(obj, UN_WWW_MAGIC) && strcmp(n, "isAlive") == 0) {
+        struct un_www_obj *w = (struct un_www_obj *)obj;
+        out->z = !w->joined && pthread_kill(w->thread, 0) == 0;
+        return 1;
+    }
+    if (strcmp(n, "loadLibrary") == 0) { out->z = 1; return 1; }  /* P/Invoke: see apkenv.c fallback */
+
+    /* --- com.glu.plugins.* (AJavaTools) --- */
+    /* getFilesDir().getPath() / getExternalFilesDir(null).getPath(): one data
+     * dir serves both on webOS (it lives on the media partition already). */
+    if (strcmp(n, "GetFilesPath") == 0 || strcmp(n, "GetExternalFilesPath") == 0) {
+        /* Android's layout, <data>/files beside <data>/shared_prefs: Glu's
+         * GWalletHelper writes "<files>/../shared_prefs/GWalletHelper.xml"
+         * (robocop-r5: DirectoryNotFoundException). */
+        char path[PATH_MAX];
+        size_t l;
+        snprintf(path, sizeof(path), "%s", un_home);
+        l = strlen(path);
+        while (l > 1 && path[l - 1] == '/') path[--l] = '\0';
+        snprintf(path + l, sizeof(path) - l, "/shared_prefs");
+        mkdir(path, 0755);
+        snprintf(path + l, sizeof(path) - l, "/files");
+        mkdir(path, 0755);
+        out->l = (*env)->NewStringUTF(env, path);
+        return 1;
+    }
+    if (strcmp(n, "GetDeviceLanguage") == 0) { out->l = (*env)->NewStringUTF(env, "en"); return 1; }
+    if (strcmp(n, "GetDeviceCountry") == 0 || strcmp(n, "getCurrentCountryISO") == 0) {
+        out->l = (*env)->NewStringUTF(env, "US");
+        return 1;
+    }
+    if (strcmp(n, "GetPackageName") == 0) { out->l = (*env)->NewStringUTF(env, un_pkg); return 1; }
+    if (strcmp(n, "GetVersionName") == 0) {
+        out->l = (*env)->NewStringUTF(env, un_env_or("APKENV_UNITY_VERSION_NAME", "1.0"));
+        return 1;
+    }
+    if (strcmp(n, "GetVersionCode") == 0) {
+        out->i = atoi(un_env_or("APKENV_UNITY_VERSION_CODE", "1"));
+        return 1;
+    }
+    if (strcmp(n, "GetRunCount") == 0) { out->i = un_glu_runcount; return 1; }
+    /* AJTUtil.GetOBBDownloadPlan: "old" = the installed OBB is current (the
+     * Java default once the version code is recorded). null threw in
+     * Util.LogEventOBB (eventName) inside App.Awake. */
+    if (strcmp(n, "GetOBBDownloadPlan") == 0) { out->l = (*env)->NewStringUTF(env, "old"); return 1; }
+    if (strcmp(n, "GetAndroidID") == 0) { out->l = (*env)->NewStringUTF(env, "0f1e2d3c4b5a6978"); return 1; }
+    if (strcmp(n, "elapsedRealtime") == 0 || strcmp(n, "uptimeMillis") == 0) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        out->j = (jlong)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+        return 1;
+    }
+    /* Glu build properties (res/raw/properties.dat, AES in the Java host). The
+     * C# side falls back to defaults on null; the two that steer behaviour: */
+    if (strcmp(n, "GetProperty") == 0 && un_endswith(cls, "AJTUtil")) {
+        const char *key = un_jstr(env, un_arg_ptr(a));
+        const char *v = NULL;
+        if (key != NULL && strcmp(key, "DEVELOPMENT_BUILD") == 0) v = "false";
+        else if (key != NULL && strcmp(key, "BUILD_TYPE") == 0) v = "google";
+        un_refl_log("call", "AJTUtil", "GetProperty", key);
+        out->l = v != NULL ? (*env)->NewStringUTF(env, v) : NULL;
+        return 1;
+    }
+    /* GooglePlayServicesUtil result: 1 = SERVICE_MISSING (what ACL reports).
+     * 0 would mean "available" and start a sign-in that waits for a callback. */
+    if (strcmp(n, "IsPlayGameServicesAvailable") == 0) { out->i = 1; return 1; }
+    if (strcmp(n, "IsDeviceRooted") == 0 || strcmp(n, "IsGluDebug") == 0 ||
+        strcmp(n, "isPayerUser") == 0) {
+        out->z = 0;
+        return 1;
+    }
+    if (strcmp(n, "GetScreenDiagonalInches") == 0) { out->d = 9.7; return 1; }
+
+    /* --- java.util.Locale: Application.systemLanguage, from engine code.
+     * A NULL string here aborts libunity in std::string. --- */
+    if (strcmp(n, "getDefault") == 0 && un_endswith(cls, "java/util/Locale")) {
+        out->l = un_new_obj("java/util/Locale", NULL);
+        return 1;
+    }
+    if (strcmp(n, "getISO3Language") == 0) { out->l = (*env)->NewStringUTF(env, "eng"); return 1; }
+    if (strcmp(n, "getLanguage") == 0 && un_endswith(cls, "java/util/Locale")) {
+        out->l = (*env)->NewStringUTF(env, "en");
+        return 1;
+    }
+    if (strcmp(n, "getCountry") == 0 && un_endswith(cls, "java/util/Locale")) {
+        out->l = (*env)->NewStringUTF(env, "US");
+        return 1;
+    }
+
+    /* --- NativeUtils.MT_GetCurrentMemoryBytes, polled by FpsCounter.Update:
+     * ActivityManager.getProcessMemoryInfo(new int[]{Process.myPid()})[0]
+     * .getTotalPss(). A NULL array threw IndexOutOfRangeException on nearly
+     * every frame (124 in a short play session, robocop-r13). --- */
+    if (strcmp(n, "myPid") == 0) { out->i = getpid(); return 1; }
+    if (strcmp(n, "getProcessMemoryInfo") == 0) {
+        jintArray arr = (*env)->NewIntArray(env, 1);      /* pointer-sized slots */
+        struct dummy_array *da = (struct dummy_array *)arr;
+        if (da != NULL && da->data != NULL)
+            ((void **)da->data)[0] = un_new_obj("android/os/Debug$MemoryInfo", NULL);
+        out->l = arr;
+        return 1;
+    }
+    if (strcmp(n, "getTotalPss") == 0) {                 /* kB; VmRSS, re-read once a second */
+        static int kb;
+        static time_t last;
+        time_t now = time(NULL);
+        if (now != last) {
+            char line[128];
+            FILE *f = fopen("/proc/self/status", "r");
+            last = now;
+            while (f != NULL && fgets(line, sizeof(line), f) != NULL)
+                if (sscanf(line, "VmRSS: %d kB", &kb) == 1) break;
+            if (f != NULL) fclose(f);
+        }
+        out->i = kb;
+        return 1;
+    }
+
+    /* --- android.* chains --- */
+    if (strcmp(n, "getWidth") == 0 && un_endswith(cls, "Display")) { out->i = un_screen_w; return 1; }
+    if (strcmp(n, "getHeight") == 0 && un_endswith(cls, "Display")) { out->i = un_screen_h; return 1; }
+    if (strcmp(n, "getPackageManager") == 0) {
+        out->l = un_new_obj("android/content/pm/PackageManager", NULL);
+        return 1;
+    }
+    if (strcmp(n, "getPackageInfo") == 0) {
+        out->l = un_new_obj("android/content/pm/PackageInfo", NULL);
+        return 1;
+    }
+    return 0;
+}
+
+/* An unanswered plugin call that returns an object (a factory, a manager
+ * instance): hand back a stand-in of the declared return class rather than
+ * NULL. Managed code wraps the result in an AndroidJavaObject, and a NULL there
+ * throws "Init'd AndroidJavaObject with null ptr!" and aborts the caller's
+ * Awake - Glu's App.Awake set up every plugin after the ads factory this way
+ * (robocop-r3). Calls made on the stand-in come back through un_java_call and
+ * are logged like any other. Strings and arrays stay NULL: a fake object there
+ * would be read as character or element data. */
+static jobject
+un_standin(const char *kind, const char *cls, jmethodID m)
+{
+    const char *ret = m->sig != NULL ? strchr(m->sig, ')') : NULL;
+    char name[256];
+    size_t l;
+    un_java_unanswered(kind, cls, m);
+    if (ret == NULL || ret[1] != 'L' || strcmp(ret + 1, "Ljava/lang/String;") == 0)
+        return NULL;
+    snprintf(name, sizeof(name), "%s", ret + 2);
+    l = strlen(name);
+    if (l > 0 && name[l - 1] == ';') name[l - 1] = '\0';
+    return un_new_obj(name, NULL);
+}
+
+/* The A entry points. Static calls pass the class; instance calls the object. */
+static jvalue
+un_call_a(JNIEnv *env, const char *kind, jclass cls, jobject obj, jmethodID m,
+          const jvalue *args, int *answered)
+{
+    struct un_args a = { NULL, args, 0 };
+    const char *c = cls != NULL ? un_described(cls) :
+                    obj != NULL ? un_described(((dummy_jobject *)obj)->clazz) : "?";
+    jvalue v;
+    *answered = un_java_call(env, c, obj, m, &a, &v);
+    if (!*answered) {
+        v.j = 0;
+    }
+    return v;
+}
+
+#define UN_A_STATIC(ret, Name, field, fallback)                                   \
+static ret                                                                        \
+unity_jnienv_CallStatic##Name##MethodA(JNIEnv *env, jclass cls, jmethodID m, jvalue *args) \
+{                                                                                 \
+    int ok;                                                                       \
+    jvalue v;                                                                     \
+    if (!un_unity42) return fallback;                                             \
+    v = un_call_a(env, "static", cls, NULL, m, args, &ok);                        \
+    if (!ok) un_java_unanswered("static " #Name, un_described(cls), m);           \
+    return (ret)v.field;                                                          \
+}
+#define UN_A_INSTANCE(ret, Name, field, fallback)                                 \
+static ret                                                                        \
+unity_jnienv_Call##Name##MethodA(JNIEnv *env, jobject obj, jmethodID m, jvalue *args) \
+{                                                                                 \
+    int ok;                                                                       \
+    jvalue v;                                                                     \
+    if (!un_unity42) return fallback;                                             \
+    v = un_call_a(env, "instance", NULL, obj, m, args, &ok);                      \
+    if (!ok) un_java_unanswered(#Name, obj ? un_described(((dummy_jobject *)obj)->clazz) : "null", m); \
+    return (ret)v.field;                                                          \
+}
+UN_A_STATIC(jboolean, Boolean, z, 0)
+UN_A_STATIC(jint, Int, i, 0)
+UN_A_STATIC(jlong, Long, j, 0)
+UN_A_STATIC(jfloat, Float, f, 0.0f)
+UN_A_STATIC(jdouble, Double, d, 0.0)
+UN_A_INSTANCE(jboolean, Boolean, z, 0)
+UN_A_INSTANCE(jint, Int, i, 0)
+UN_A_INSTANCE(jlong, Long, j, 0)
+UN_A_INSTANCE(jfloat, Float, f, 0.0f)
+UN_A_INSTANCE(jdouble, Double, d, 0.0)
+
+static jobject
+unity_jnienv_CallStaticObjectMethodA(JNIEnv *env, jclass cls, jmethodID m, jvalue *args)
+{
+    int ok;
+    jvalue v;
+    if (!un_unity42)
+        return NULL;                                           /* jnienv.c: NULL */
+    if (strcmp(m->name, "getMethodID") == 0 || strcmp(m->name, "getFieldID") == 0 ||
+        strcmp(m->name, "getConstructorID") == 0) {
+        struct un_args a = { NULL, args, 0 };
+        return un_reflect(env, m, &a);
+    }
+    v = un_call_a(env, "static", cls, NULL, m, args, &ok);
+    if (ok) return v.l;
+    return un_standin("static Object", un_described(cls), m);
+}
+
+static void
+unity_jnienv_CallStaticVoidMethodA(JNIEnv *env, jclass cls, jmethodID m, jvalue *args)
+{
+    int ok;
+    if (!un_unity42)
+        return;
+    un_call_a(env, "static", cls, NULL, m, args, &ok);
+    if (!ok) un_java_unanswered("static Void", un_described(cls), m);
+}
+
+/* Object arrays we build (getProcessMemoryInfo) are pointer-sized int arrays. */
+static jobject
+unity_jnienv_GetObjectArrayElement(JNIEnv *env, jobjectArray a, jsize i)
+{
+    struct dummy_array *da = (struct dummy_array *)a;
+    if (!un_unity42 || da == NULL || da->data == NULL || i < 0 || i >= da->length ||
+        da->element_size != sizeof(void *))
+        return NULL;                                           /* jnienv.c: NULL */
+    return ((void **)da->data)[i];
+}
+
+static jobject
+unity_jnienv_GetObjectField(JNIEnv *env, jobject obj, jfieldID f)
+{
+    const char *n = f != NULL ? ((struct _jmethodID *)f)->name : NULL;
+    if (!un_unity42 || n == NULL)
+        return NULL;                                           /* jnienv.c: NULL */
+    if (strcmp(n, "versionName") == 0)                         /* PackageInfo */
+        return (*env)->NewStringUTF(env, un_env_or("APKENV_UNITY_VERSION_NAME", "1.0"));
+    un_refl_log("GetObjectField", obj ? un_described(((dummy_jobject *)obj)->clazz) : "?",
+                n, "-> NULL (unanswered)");
+    return NULL;
+}
+
+/* ---- Unity 4.2: host WWW (com.unity3d.player.WWW) ---------------------------
+ * On Android, UnityEngine.WWW is Java: the host calls nativeInitWWW(WWW.class),
+ * the engine binds its callbacks there, and each request is
+ * `new WWW(id, url, postData, headers)` - a Thread that opens the URL and streams
+ * it back through the static natives. apkenv never called nativeInitWWW, so every
+ * WWW - including LOCAL ones - neither completed nor failed. RoboCop's content
+ * pipeline resolves its A/B test offline from
+ * WWW("jar:file://<obb>!/assets/ABTesting.xml"); unresolved, it raised
+ * "ABTesting resolution is not valid" (the "SLOW INTERNET CONNECTION" screen).
+ *
+ * This follows WWW.run() from the game's own smali for the protocols a device
+ * with no network actually serves: file:// and jar:file://<zip>!/<entry> are
+ * read and streamed (content-length header, 32 KB readCallback chunks after a
+ * leading zero-length one, progress, done); anything else fails with the
+ * exception text Java would produce offline. */
+typedef jboolean (*un_www_header_t)(JNIEnv *, jclass, jint, jstring) SOFTFP;
+typedef jboolean (*un_www_read_t)(JNIEnv *, jclass, jint, jbyteArray, jint) SOFTFP;
+typedef void (*un_www_progress_t)(JNIEnv *, jclass, jint, jfloat, jfloat, jdouble, jint) SOFTFP;
+typedef void (*un_www_done_t)(JNIEnv *, jclass, jint) SOFTFP;
+typedef void (*un_www_error_t)(JNIEnv *, jclass, jint, jstring) SOFTFP;
+
+#define UN_WWW_CLASS "com/unity3d/player/WWW"
+static jclass un_www_class;
+static pthread_mutex_t un_www_zip_lock = PTHREAD_MUTEX_INITIALIZER;
+
+struct un_www_req {
+    JNIEnv *env;
+    int id;
+    char *url;
+};
+
+
+/* One open zip per archive path, reused: apklib has no close, and unzip
+ * handles are not thread-safe, hence the lock around every read. */
+static int
+un_www_read_zip(const char *zip, const char *entry, char **buf, size_t *len)
+{
+    #define UN_WWW_ZIPS 4
+    static struct { char *path; AndroidApk *apk; } zips[UN_WWW_ZIPS];
+    AndroidApk *apk = NULL;
+    int i, ok;
+
+    pthread_mutex_lock(&un_www_zip_lock);
+    for (i = 0; i < UN_WWW_ZIPS && zips[i].path != NULL; i++)
+        if (strcmp(zips[i].path, zip) == 0) { apk = zips[i].apk; break; }
+    if (apk == NULL && i < UN_WWW_ZIPS) {
+        apk = apk_open(zip);
+        if (apk != NULL) { zips[i].path = strdup(zip); zips[i].apk = apk; }
+    }
+    ok = apk != NULL && apk_read_file(apk, entry, buf, len) == APK_OK;
+    pthread_mutex_unlock(&un_www_zip_lock);
+    return ok;
+}
+
+static int
+un_www_read_file(const char *path, char **buf, size_t *len)
+{
+    FILE *f = fopen(path, "rb");
+    long n;
+    if (f == NULL) return 0;
+    fseek(f, 0, SEEK_END); n = ftell(f); fseek(f, 0, SEEK_SET);
+    *buf = malloc(n > 0 ? n : 1);
+    *len = (n > 0 && fread(*buf, 1, n, f) == (size_t)n) ? (size_t)n : 0;
+    fclose(f);
+    return n >= 0;
+}
+
+static void *
+un_www_run(void *arg)
+{
+    struct un_www_req *r = arg;
+    JNIEnv *env = r->env;
+    un_www_header_t header = (void *)jnienv_find_native_method(UN_WWW_CLASS, "headerCallback");
+    un_www_read_t readcb = (void *)jnienv_find_native_method(UN_WWW_CLASS, "readCallback");
+    un_www_progress_t progress = (void *)jnienv_find_native_method(UN_WWW_CLASS, "progressCallback");
+    un_www_done_t done = (void *)jnienv_find_native_method(UN_WWW_CLASS, "doneCallback");
+    un_www_error_t error = (void *)jnienv_find_native_method(UN_WWW_CLASS, "errorCallback");
+    char *buf = NULL, err[1024];
+    size_t len = 0;
+    int found = 0;
+
+    err[0] = '\0';
+    if (strncmp(r->url, "jar:file://", 11) == 0) {
+        char *zip = strdup(r->url + 11), *bang = strstr(zip, "!/");
+        if (bang != NULL) {
+            *bang = '\0';
+            found = un_www_read_zip(zip, bang + 2, &buf, &len);
+            if (!found)
+                snprintf(err, sizeof(err), "java.io.FileNotFoundException: JAR entry %s not found in %s",
+                         bang + 2, zip);
+        } else {
+            snprintf(err, sizeof(err), "java.net.MalformedURLException: no !/ in spec");
+        }
+        free(zip);
+    } else if (strncmp(r->url, "file://", 7) == 0) {
+        found = un_www_read_file(r->url + 7, &buf, &len);
+        if (!found)
+            snprintf(err, sizeof(err), "java.io.FileNotFoundException: %s (No such file or directory)",
+                     r->url + 7);
+    } else {
+        /* No network on this path: what an offline Android device reports. */
+        char host[256] = "";
+        const char *h = strstr(r->url, "://");
+        if (h != NULL) sscanf(h + 3, "%255[^/:?]", host);
+        snprintf(err, sizeof(err), "java.net.UnknownHostException: Unable to resolve host \"%s\": "
+                 "No address associated with hostname", host);
+    }
+    fprintf(stderr, "[UN-WWW] #%d %s -> %s\n", r->id, r->url,
+            found ? "ok" : err);
+    if (found) fprintf(stderr, "[UN-WWW] #%d %zu bytes\n", r->id, len);
+
+    if (found && header != NULL && readcb != NULL && done != NULL) {
+        char h[64];
+        jbyteArray arr;
+        size_t chunk = len < 0x8000 ? (len ? len : 0x8000) : 0x8000, off = 0;
+        int aborted = 0;
+
+        snprintf(h, sizeof(h), "content-length: %zu\n\r", len);
+        if (header(env, un_www_class, r->id, (*env)->NewStringUTF(env, h))) {
+            aborted = 1;
+        } else {
+            arr = (*env)->NewByteArray(env, (jsize)chunk);
+            /* WWW.run(): the loop starts with read count 0. */
+            aborted = readcb(env, un_www_class, r->id, arr, 0);
+            while (!aborted && off < len) {
+                size_t n = len - off < chunk ? len - off : chunk;
+                (*env)->SetByteArrayRegion(env, arr, 0, (jsize)n, (jbyte *)buf + off);
+                off += n;
+                aborted = readcb(env, un_www_class, r->id, arr, (jint)n);
+                if (!aborted && progress != NULL)
+                    progress(env, un_www_class, r->id, 1.0f, (jfloat)off / (jfloat)len, 0.0, (jint)len);
+            }
+        }
+        if (aborted) {
+            char m[1024];
+            snprintf(m, sizeof(m), "%s aborted", r->url);
+            if (error != NULL) error(env, un_www_class, r->id, (*env)->NewStringUTF(env, m));
+        } else {
+            if (progress != NULL)
+                progress(env, un_www_class, r->id, 1.0f, 1.0f, 0.0, (jint)len);
+            done(env, un_www_class, r->id);
+        }
+    } else if (error != NULL) {
+        error(env, un_www_class, r->id, (*env)->NewStringUTF(env, err));
+    }
+    free(buf);
+    free(r->url);
+    free(r);
+    return NULL;
+}
+
+/* new WWW(int id, String url, byte[] postData, Map headers): starts the thread. */
+static jobject
+un_www_new(JNIEnv *env, jclass cls, struct un_args *a)
+{
+    struct un_www_req *r = calloc(1, sizeof(*r));
+    const char *url;
+    pthread_t t;
+    pthread_attr_t attr;
+
+    r->env = env;
+    r->id = (int)(a->jv != NULL ? a->jv[a->i++].i : va_arg(*a->ap, jint));
+    url = un_jstr(env, un_arg_ptr(a));
+    r->url = strdup(url != NULL ? url : "");
+    struct un_www_obj *o = calloc(1, sizeof(*o));
+    o->clazz = un_class(UN_WWW_CLASS);
+    o->magic = UN_WWW_MAGIC;
+    (void)t; (void)attr;
+    pthread_create(&o->thread, NULL, un_www_run, r);
+    return o;
+}
+
+/* The "..." form. Before Unity 4.2 this was jni/jnienv.c's (returns NULL). */
+static jobject
+unity_jnienv_NewObject_gated(JNIEnv *env, jclass cls, jmethodID m, ...)
+{
+    jobject o;
+    va_list ap;
+    if (!un_unity42)
+        return NULL;
+    va_start(ap, m);
+    o = unity_jnienv_NewObjectV(env, cls, m, ap);
+    va_end(ap);
+    return o;
+}
 
 typedef void (*unity_nativeInit_t)(JNIEnv* env, jobject p0, jint p1, jint p2);
 typedef void (*unity_nativeFile_t)(JNIEnv* env, jobject p0, jstring p1);
@@ -1017,6 +1686,22 @@ unity_try_init(struct SupportModule *self)
     self->override_env.CallVoidMethodA = unity_jnienv_CallVoidMethodA;
     self->override_env.GetIntField = unity_jnienv_GetIntField;
     self->override_env.GetFloatField = unity_jnienv_GetFloatField;
+    /* Unity 4.2: jvalue[] forms (inert unless un_unity42). */
+    self->override_env.CallStaticObjectMethodA = unity_jnienv_CallStaticObjectMethodA;
+    self->override_env.CallStaticVoidMethodA = unity_jnienv_CallStaticVoidMethodA;
+    self->override_env.CallStaticBooleanMethodA = unity_jnienv_CallStaticBooleanMethodA;
+    self->override_env.CallStaticIntMethodA = unity_jnienv_CallStaticIntMethodA;
+    self->override_env.CallStaticLongMethodA = unity_jnienv_CallStaticLongMethodA;
+    self->override_env.CallStaticFloatMethodA = unity_jnienv_CallStaticFloatMethodA;
+    self->override_env.CallStaticDoubleMethodA = unity_jnienv_CallStaticDoubleMethodA;
+    self->override_env.CallBooleanMethodA = unity_jnienv_CallBooleanMethodA;
+    self->override_env.CallIntMethodA = unity_jnienv_CallIntMethodA;
+    self->override_env.CallLongMethodA = unity_jnienv_CallLongMethodA;
+    self->override_env.CallFloatMethodA = unity_jnienv_CallFloatMethodA;
+    self->override_env.CallDoubleMethodA = unity_jnienv_CallDoubleMethodA;
+    self->override_env.GetObjectField = unity_jnienv_GetObjectField;
+    self->override_env.GetObjectArrayElement = unity_jnienv_GetObjectArrayElement;
+    self->override_env.NewObject = unity_jnienv_NewObject_gated;
 
     return (self->priv->JNI_OnLoad_libunity!=NULL);
 }
@@ -1204,15 +1889,40 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
      * unityAndroidPrepareGameLoop; then nativeRender() per frame. */
     un_unity4 = (jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeSetInputCanceled") != NULL);
     fprintf(stderr, "[UN] unity4 host: %s\n", un_unity4 ? "yes" : "no (3.5 order)");
+    un_unity42 = un_unity4 &&
+        jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeSetDefaultDisplay") != NULL;
+    fprintf(stderr, "[UN] unity 4.2 host (jvalue[] AndroidJavaObject calls): %s\n",
+            un_unity42 ? "yes" : "no");
+    if (un_unity42) {
+        struct un_pref *rc = un_pref_find(UN_GLU_RUNCOUNT_KEY);
+        int prev = (rc != NULL && rc->type == UN_PREF_INT) ? rc->i : 0;
+        un_glu_runcount = prev + 1;
+        rc = un_pref_slot(UN_GLU_RUNCOUNT_KEY);
+        if (rc != NULL) {
+            rc->type = UN_PREF_INT; rc->i = un_glu_runcount; un_prefs_dirty = 1;
+            un_prefs_save();
+        }
+        fprintf(stderr, "[UN] launch #%d (host run count)\n", un_glu_runcount);
+    }
     {
         const char *pkg = getenv("APKENV_UNITY_PACKAGE");
         if (pkg != NULL && pkg[0] != '\0') un_pkg = pkg;
         fprintf(stderr, "[UN] package name: %s\n", un_pkg);
     }
 
-    jstring file = GLOBAL_M->env->NewStringUTF(ENV_M,global->apk_filename);
-    un_hookcheck("nativeFile"); fprintf(stderr, "[UN] nativeFile(%s)\n", global->apk_filename);
-    self->priv->nativeFile(ENV_M,GLOBAL_M,file);
+    /* APKENV_UNITY_OBB_CODEPATH=1: Glu's UnityLauncherActivity overrides
+     * getPackageCodePath() to return the OBB, so the engine's ONLY nativeFile()
+     * is the expansion file and Application.dataPath points into it. RoboCop's
+     * offline content fallbacks (jar:file://<dataPath>!/assets/ABTesting.xml,
+     * .../assets/AssetBundles/) exist only in the OBB; with the apk as dataPath
+     * DynamicContentPipeline failed ("SLOW INTERNET CONNECTION", robocop-r6). */
+    un_obb_codepath = getenv("APKENV_UNITY_OBB_CODEPATH") != NULL &&
+                      getenv("APKENV_UNITY_OBB_CODEPATH")[0] == '1';
+    if (!un_obb_codepath) {
+        jstring file = GLOBAL_M->env->NewStringUTF(ENV_M,global->apk_filename);
+        un_hookcheck("nativeFile"); fprintf(stderr, "[UN] nativeFile(%s)\n", global->apk_filename);
+        self->priv->nativeFile(ENV_M,GLOBAL_M,file);
+    }
     /* Split-binary games (settings.xml useObb=True) keep assets/bin/Data in an
      * expansion file. The Unity 4 host's constructor follows nativeFile(apk)
      * with l(), which calls nativeFile() once more for each OBB it finds under
@@ -1225,7 +1935,9 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
             char abs[PATH_MAX];
             struct stat st;
             if (realpath(obb, abs) != NULL && stat(abs, &st) == 0) {
-                fprintf(stderr, "[UN] nativeFile(obb %s, %lld bytes)\n", abs, (long long)st.st_size);
+                if (un_obb_codepath) un_codepath = strdup(abs);
+                fprintf(stderr, "[UN] nativeFile(obb %s, %lld bytes)%s\n", abs, (long long)st.st_size,
+                        un_obb_codepath ? " [as the package code path]" : "");
                 self->priv->nativeFile(ENV_M, GLOBAL_M, GLOBAL_M->env->NewStringUTF(ENV_M, abs));
             } else {
                 fprintf(stderr, "[UN] WARNING: APKENV_UNITY_OBB=%s not found (%s) - the engine "
@@ -1235,6 +1947,14 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
     }
     if (self->priv->initJni) { un_hookcheck("initJni"); fprintf(stderr, "[UN] initJni\n"); self->priv->initJni(ENV_M,GLOBAL_M); }
     if (self->priv->InitPlayerPrefs) { un_hookcheck("InitPlayerPrefs"); fprintf(stderr, "[UN] InitPlayerPrefs\n"); self->priv->InitPlayerPrefs(ENV_M,GLOBAL_M); }
+    /* Java host a(IZ): nativeInitWWW(WWW.class) right after PlayerPrefs. */
+    if (un_unity42) {
+        void (*initwww)(JNIEnv *, jobject, jclass) = (void *)
+            jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeInitWWW");
+        un_www_class = GLOBAL_M->env->FindClass(ENV_M, UN_WWW_CLASS);
+        fprintf(stderr, "[UN] nativeInitWWW(%s)%s\n", UN_WWW_CLASS, initwww ? "" : " - NOT FOUND");
+        if (initwww) initwww(ENV_M, GLOBAL_M, un_www_class);
+    }
     /* Swap to the portrait surface the engine will believe in. Everything
      * downstream (nativeInit, nativeResize, the touch mapping) must use the
      * SAME pair, or the engine lays out for one size and receives input in
@@ -1254,6 +1974,14 @@ unity_init(struct SupportModule *self, int width, int height, const char *home)
      * it built its fixed-function device) and a splash mode of 768 (so the
      * Imangi logo screen never showed). The size reaches the engine through
      * nativeResize, which we already call correctly. */
+    /* Unity 4.2 host a(IZ): nativeSetDefaultDisplay(getWindowManager()
+     * .getDefaultDisplay()) just before queueing nativeInit. */
+    if (un_unity42) {
+        void (*setdisp)(JNIEnv *, jobject, jobject) = (void *)
+            jnienv_find_native_method(UNITYPLAYER_CLASS_NAME, "nativeSetDefaultDisplay");
+        fprintf(stderr, "[UN] nativeSetDefaultDisplay(Display %dx%d)\n", width, height);
+        setdisp(ENV_M, GLOBAL_M, un_new_obj("android/view/Display", NULL));
+    }
     {
         int gles_mode = 2, splash_mode = 1;
         const char *e;
@@ -1602,7 +2330,15 @@ unity_update(struct SupportModule *self)
         jboolean r = self->priv->nativeRender(ENV_M,GLOBAL_M);
         self->priv->frames++;
         if (self->priv->frames <= 3 || (self->priv->frames % 600) == 0) {
-            fprintf(stderr, "[UN] nativeRender #%lu -> %d\n", self->priv->frames, r);
+            /* Frame rate over the last 600 frames, from the monotonic clock. */
+            static jlong t0;
+            jlong t = un_now_ms();
+            if ((self->priv->frames % 600) == 0 && t0 != 0)
+                fprintf(stderr, "[UN] nativeRender #%lu -> %d  (%.1f fps)\n", self->priv->frames, r,
+                        600000.0 / (double)(t - t0));
+            else
+                fprintf(stderr, "[UN] nativeRender #%lu -> %d\n", self->priv->frames, r);
+            if ((self->priv->frames % 600) == 0 || self->priv->frames == 3) t0 = t;
             apkenv_gl_probe_frame(self->priv->frames);
         }
         /* The app is killed rather than closed on webOS (and during dev by the
