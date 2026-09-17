@@ -1,0 +1,22 @@
+# Memory Index
+
+- [Android APK port triage](android-apk-port-triage.md) — how to pick candidate games (Tier 1 native .ipk vs Tier 2 .apk wrapper) + the slim-wrapper (apkenv-style) architecture for NDK games
+- [Temple Run 2 port analysis](templerun2-port-analysis.md) — full running log, recon → **SHIPPED 1.4.0** (portrait, touch/swipe/tilt, 3D, music, splash); the running record of what worked and which conclusions were wrong
+- [ACL anatomy](acl-anatomy.md) — what OpenMobile ACL is internally (full Android 2.3.6, not a shim) and which parts to harvest for a slim NDK→webOS game wrapper
+- [Wrapper spike progress](wrapper-spike-progress.md) — where WMW / WMW2 / PvZ HD / Amazing Alex stand, **and the refuted theories** (PvZ's freeze trail chased the wrong binary; WMW's carve bug was arbitration, not no-capture). Full 11.5k-word trail archived at `plan/WMW-PVZ-TRAIL.md`
+- [Trust operator diagnosis](trust-operator-diagnosis.md) — when the user repeatedly/firmly rules out a hypothesis class (e.g. "it's NOT coordinates"), pivot away immediately; don't keep testing variants of it
+- [Android runtime plan](android-runtime-plan.md) — strategic pivot: apkenv = faithful Gingerbread contract-host (5 subsystem contracts), not a per-game puppeteer. Staged plan in project `android-runtime-architecture.md` + `plan/`
+- [Systematic, not brute force](systematic-not-brute-force.md) — theory-driven + instrumented staging before any device test; the user tests only prepared protocols
+- [Static answer before dynamic probe](static-answer-before-dynamic-probe.md) — grep the binary before instrumenting the process, and check you are grepping the RIGHT binary (a 43 KB proxy is not the engine)
+- [Deliver the outcome, not the mechanism](deliver-the-outcome-not-the-mechanism.md) — engine subsystem stuck and unsafe to patch? carry the player-visible result over a path that already works, with the game's own asset and stated limits
+- [The shim owns the host platform's jobs](shim-owns-the-host-platforms-jobs.md) — splash, settings, lifecycle: what the PLATFORM did is missing by definition, so supply it instead of hunting an engine path
+- [Don't touch shipped ports](dont-touch-shipped-ports.md) — shipped ports (TR2 1.4.0 etc.) are frozen; gate new behaviour on the new game; the user prefers systemic root-cause fixes
+- [Screenshots lie](screenshots-lie.md) — don't theorise from a webOS capture's brightness; grab the GL frame with tools/grab.sh and ask what the user sees on the panel
+- [Inheriting in-flight work](inheriting-in-flight-work.md) — recovering a crashed session: secure the gitignored generated artifacts and make them reproducible BEFORE running any build
+- [Call the engine's JNI_OnLoad](call-the-engines-jni-onload.md) — it is where an engine RegisterNatives its own callbacks; skipping it killed Fruit Ninja's audio via a thread that exited instantly
+- [Drive the port without a person](drive-the-port-without-a-person.md) — synthetic taps/swipes through the real input path + grab.sh; how Fruit Ninja got from "boots" to "scoring in Classic mode" with nobody holding the device
+- [Probe every path the engine takes](probe-every-path-the-engine-takes.md) — a tracer covering only some syscalls gives confident false negatives; verify the probe before believing a negative result
+- [bionic stdio is an ABI](bionic-stdio-is-an-abi.md) — fileno/feof are macros reading FILE fields; glibc FILEs give fd 0 → empty written files. Trace write/writev; opt into FILE proxies
+- [Exit and lifecycle like Android](exit-and-lifecycle-like-android.md) — no second onPause, no C++ static destructors (_exit from an atexit registered in deinit); test pause/resume/quit with calculator launch + kill -15
+- [Test tools under a tty](test-tools-under-a-tty.md) — timeout+novacom hangs (SIGTTIN) in the user's terminal but not the agent shell; use timeout --foreground + </dev/null, test with script -qec
+- [Host runtime bypasses apkenv hooks](host-runtime-bypasses-apkenv-hooks.md) — host Mono I/O and dlopen are invisible to apkenv tracers (use device strace); an offline "slow internet" can be a missing local transport (Unity Java WWW)

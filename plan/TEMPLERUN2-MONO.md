@@ -453,7 +453,7 @@ Everything else works — 3600+ frames, no crashes, audio pump up, ~10k draws/se
   texture bound, is `GL_TEXTURE_2D` enabled, what `glTexEnv` mode, blend/depth state — rather
   than reasoning about it. That is what found the duplicate-hook bug today.
 
-### Cross-reference: `/home/jonwise/Projects/touchpad-pdk` (the PDK-patching track)
+### Cross-reference: [Pre-PDK-to-TouchPad-Ports](https://github.com/webOSArchive/Pre-PDK-to-TouchPad-Ports) (the PDK-patching track)
 Its `touchpad-porting.md` is the closest prior art and is worth reading before the next attempt:
 - Its symptom→cause table covers this exact family of Adreno bugs. The headline one: **DRIVER
   rendered garbled because `glClear(GL_DEPTH_BUFFER_BIT)` is a no-op while `glDepthMask` is

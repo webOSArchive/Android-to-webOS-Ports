@@ -19,11 +19,11 @@
 #                                         resolved by apkenv's Mono P/Invoke fallback)
 # No bytes of any library are changed, and the OBB ships unmodified.
 #
-# Usage: apkenv/tools/rc-stage.sh   -> apkenv/packaging/robocop.apk
+# Usage: apkenv/tools/rc-stage.sh [<apk> <obb>]   -> apkenv/packaging/robocop.apk
 set -e
 cd "$(dirname "$0")/.."
-SRC_APK=../android-candidates/robocop_3.0.6.apk
-SRC_OBB=../android-candidates/main.1309.com.glu.robocop.obb
+SRC_APK=${1:-../android-candidates/robocop_3.0.6.apk}   # paths relative to apkenv/
+SRC_OBB=${2:-../android-candidates/main.1309.com.glu.robocop.obb}
 OUT=packaging/robocop.apk
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 

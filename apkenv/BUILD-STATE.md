@@ -1,5 +1,10 @@
 # apkenv webOS port — BUILD STATE (persistent; do NOT keep this only in chat/scratch)
 
+> **Historical log, 2026-06 → 2026-08-27** (through Temple Run 2). Later ports are documented in their
+> own trails (`plan/ARALON.md`, `plan/FRUITNINJA.md`, `plan/DEAD-SPACE.md`, `plan/TINY-DEATH-STAR.md`,
+> `plan/ROBOCOP.md`); current state is in the top-level `README.md`. On-device helper scripts
+> mentioned below (`play-*.sh`, `/var/apkenv*`) lived on the development device and are not in the repo.
+
 ## ⭐ 2026-08-27 (latest) — Boot splash: the host draws it, because the engine never does
 
 `com.apkenv.templerun2` **1.4.0** shows the game's splash art through the load instead of a black
@@ -278,7 +283,7 @@ FORCECATCH, MULTITOUCH, …) unchanged. Launchers: **play.sh** (now fully playab
 play-kill.sh, stop.sh. Full staged plan + per-stage detail: `../plan/` (esp. STAGE-2/STAGE-3 §8).
 
 ### ⚠️ Source is git-tracked here but the session's changes are UNCOMMITTED. To lock against the
-prior "source lost" incident: `git -C /home/jonwise/Projects/webos-android/apkenv add -A && git commit -m "WMW playable: FBO water + paced touch + kill-thief"`
+prior "source lost" incident: `git -C apkenv/ add -A && git commit -m "WMW playable: FBO water + paced touch + kill-thief"`
 
 ---
 

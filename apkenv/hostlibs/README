@@ -12,3 +12,21 @@ never be handed to the bionic linker.
                            tools/build-mono-webos.sh. Stands in for the bionic
                            libmono.so inside templerun2_1.2.1.apk, whose export
                            set it matches exactly (910 symbols, zero diff).
+
+  unity42/libmono-unity42.so
+                           Unity's Mono 2.6.5 runtime at Unity 4.2
+                           (Unity-Technologies/mono @ unity-4.2, commit ac09c9bb),
+                           built by `tools/build-mono-webos.sh unity4.2`. Stands in
+                           for the bionic libmono.so of RoboCop 3.0.6 (Unity 4.2.2f1),
+                           whose export set it matches exactly (931 symbols). Kept in
+                           its own directory so packaging a Unity 3.5/4.0 game does
+                           not ship it: pass HOSTLIBS=hostlibs/unity42 to
+                           packaging/build-ipk.sh, which installs it as
+                           hostlibs/webos/libmono-unity42.so in the app.
+
+LICENSE
+  Both runtimes are built, unmodified apart from tools/mono-webos.patch, from
+  Unity's public fork of Mono (https://github.com/Unity-Technologies/mono). The
+  Mono runtime (libmono) is licensed under the GNU LGPL v2; the corresponding
+  source is that repository at the commits above plus tools/mono-webos.patch,
+  and tools/build-mono-webos.sh rebuilds each library from it.

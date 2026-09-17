@@ -1,10 +1,14 @@
 # Handoff: in-game TOUCH capture + WATER/rotation (WMW on webOS)
 
+> **Historical (2026-06).** Both problems described here were solved: touch by calling `PDL_Init`
+> before `SDL_Init` and feeding normalized 0..1 coordinates, water/rotation by render-to-FBO. See
+> `android-port-shim.md`. Kept as a record of the investigation.
+
 Status after a long session. Two open problems, both **precisely localized but not
 properly solved**. Goal is a **general** wrapper (many NDK games), so game-specific
 hacks are stopgaps, not solutions.
 
-- Source: `/home/jonwise/Projects/webos-android/apkenv/` (build: `./build-webos.sh`).
+- Source: `apkenv/` (build: `./build-webos.sh`).
 - Device: HP TouchPad, `root@192.168.10.88` (legacy ssh ciphers — see BUILD-STATE.md).
   Run dir `/var/apkenv/`. Game apk `/media/internal/wheresmywater.apk` (libwmw
   std::string patch baked in, md5 cdf477f1). libwmw is **not stripped** (7569 C++

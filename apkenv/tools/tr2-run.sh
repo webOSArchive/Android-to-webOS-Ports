@@ -1,5 +1,6 @@
 #!/bin/bash
-# tr2-run.sh [<logname>] - one test cycle for the packaged Temple Run 2:
+# tr2-run.sh [<logname>] - one full test cycle for ANY packaged port (the name is
+# historical: it was written for Temple Run 2). Set APPID for other games:
 #   kill any running instance -> palm-install the newest .ipk -> palm-launch ->
 #   wait -> pull /media/internal/apkenv-<appid>.log into plan/logs/<logname>.
 #
@@ -22,6 +23,7 @@ APPID=${APPID:-com.apkenv.templerun2}   # e.g. APPID=com.apkenv.aralon for anoth
 LOGNAME="${1:-tr2-run}"
 WAIT="${WAIT:-30}"
 OUT=../plan/logs/$LOGNAME.log
+mkdir -p ../plan/logs
 
 nc_run() { timeout --foreground 300 novacom run "file://$1" -- "${@:2}" < /dev/null 2>&1 || true; }
 

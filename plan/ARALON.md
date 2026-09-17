@@ -98,7 +98,7 @@ for touch (Stage B).
   main-menu scene renders smoothly at 1024x768 — **with no menu UI, taps ignored, no sound**. Taps DO
   reach `nativeTouch` (`[UN-TOUCH] … src=0x1002`); Unity 4's Java touch path is identical to 3.5's.
   The game's own log: `JNI: Unable to find method id for 'getMetrics'`, `… field id for
-  'widthPixels'` etc., `Init'd AndroidJavaObject with null ptr!`. IL scan (`scratchpad/ilscan.py`,
+  'widthPixels'` etc., `Init'd AndroidJavaObject with null ptr!`. IL scan (a session scratch script, not committed,
   built on `tools/ildump.py`): `DisplayMetricsAndroid..cctor` does
   `currentActivity.getWindowManager().getDefaultDisplay().getMetrics(new DisplayMetrics())` via
   AndroidJavaObject, and **`GuiMgr:configure` sizes the whole GUI from `WidthPixels/HeightPixels`**;

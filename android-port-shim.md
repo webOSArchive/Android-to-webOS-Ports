@@ -328,7 +328,7 @@ it is not a runtime shim concern.
 | Sound (FMOD `libfmodex` → webOS audio) | ⬜ not started |
 | Package as installable `.ipk` | ⬜ not started |
 
-See also: `touchpad-porting.md` (PDK-game patching field guide) and Claude memory notes
+See also: `touchpad-porting.md` in [Pre-PDK-to-TouchPad-Ports](https://github.com/webOSArchive/Pre-PDK-to-TouchPad-Ports) (PDK-game patching field guide) and Claude memory notes
 `wrapper-spike-progress`, `acl-anatomy`, `android-apk-port-triage`, `templerun2-port-analysis`.
 
 ## 10. Second port: Plants vs. Zombies HD (Marmalade/Airplay) — what generalized

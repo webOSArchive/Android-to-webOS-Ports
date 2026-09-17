@@ -17,7 +17,7 @@ What makes a good Tier-2 (NDK-wrapper) candidate — the kind this toolkit targe
 - **Few outbound JNI classes** to stub (analytics, billing — fake them).
 - Older titles (≈2011–2013, gingerbread-era) port most cleanly.
 
-The worked example in this repo is **Where's My Water?** (Walaber engine, GLES1,
+The first worked example in this repo was **Where's My Water?** (Walaber engine, GLES1,
 FMOD audio). See the field guide `../android-port-shim.md` and the candidate
 ranking notes in `../CLAUDE.md` for how to triage an apk before committing to a
 port, and `../plan/` for the staged porting methodology.

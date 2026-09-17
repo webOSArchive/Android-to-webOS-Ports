@@ -18,13 +18,16 @@ LAYOUT OF THIS APP DIRECTORY
 
   libs/             webOS-SIDE host libraries (the "left half" of the shim).
     webos/          apkenv loads these with its OWN userspace linker:
-      libc.so         } harvested Android 2.3 (gingerbread) bionic libraries —
-      libm.so         } the runtime the game's native code was built against.
-      libstdc++.so    }
+      libc.so         } Android 2.3 (gingerbread) bionic libraries, committed in
+      libm.so         } apkenv/libs/webos/ — the runtime the game's native code
+      libstdc++.so    } was built against.
       liblog.so       }
       libz.so         }
-      libdvm_compat.so  (unused unless Dalvik mode is on)
-      libEGL.so       webOS device EGL (pulled from the TouchPad).
+      libEGL.so       webOS device EGL (proprietary; harvested from the TouchPad
+                      by build-webos.sh, never committed).
+
+  hostlibs/webos/   glibc-side libraries bridged in for engines that carry their
+                    own runtime (Unity: libmono-webos.so or libmono-unity42.so).
 
   android/          THE ANDROID BITS (the "right half" — the game itself).
     *.apk           The Android NDK game, shipped whole. apkenv reads the
@@ -37,7 +40,7 @@ RUNTIME-WRITABLE DATA (not in this dir — the app dir is read-only at runtime)
 ----------------------------------------------------------------------------
   /media/internal/.apkenv/<apk-basename>/   savegames + the apk's extracted
                                             native libs (apkenv writes here).
-  /media/internal/apkenv-wmw.log            this app's stdout/stderr (a jailed
+  /media/internal/apkenv-<appid>.log        this app's stdout/stderr (a jailed
                                             PDK app's stdio goes nowhere else).
 
 RE-PACKING A DIFFERENT GAME

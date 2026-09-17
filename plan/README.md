@@ -1,5 +1,9 @@
 # Android→webOS runtime — staged work plan
 
+> **Historical plan (2026-06/07, the Where's My Water? era).** The stages were executed; nine games
+> now ship (see the top-level `README.md`). Per-game trails live beside this file. The method that came
+> out of it is `../PORTING-PLAYBOOK.md`.
+
 This directory is the **staged execution plan** for finishing the Android-NDK→webOS runtime bridge
 (no ACL). The strategy and rationale live in `../android-runtime-architecture.md`; **read that first.**
 These stage docs are the *work orders*.
@@ -59,7 +63,7 @@ first after the harness.
 
 ## Source & device facts (shared anchors)
 
-- Source of truth: `/home/jonwise/Projects/webos-android/apkenv/` (git-tracked). Build:
+- Source of truth: `apkenv/` (git-tracked). Build:
   `apkenv/build-webos.sh` (two-toolchain: gcc-13 compile against PalmPDK glibc-2.4 headers → PalmPDK
   gcc-4.3.3 link). Full recipe + as-built notes: `apkenv/BUILD-STATE.md`,
   `apkenv/HANDOFF-touch-water.md`.

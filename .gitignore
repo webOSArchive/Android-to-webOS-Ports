@@ -22,7 +22,10 @@ android-candidates/*/
 # Extracted / patched game engine binaries
 libwmw*.so
 libfmodex*.so
-wmw-patch/
+# wmw-patch/: bake.py + CANDIDATES.md are committed (offsets and words only);
+# the libraries and apks it reads and writes are game binaries.
+wmw-patch/*.so
+wmw-patch/*.apk
 # Extracted game asset trees
 gameroot/
 # Game imagery (launcher icons & screenshots contain copyrighted game art)
@@ -73,6 +76,10 @@ dist/
 *.minicore
 core
 core.*
+
+# Python bytecode
+__pycache__/
+*.pyc
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Editor / OS noise

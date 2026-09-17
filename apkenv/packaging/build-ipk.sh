@@ -1,12 +1,8 @@
 #!/bin/bash
-# build-ipk.sh — assemble the webOS PDK .ipk for the apkenv WMW runtime.
+# build-ipk.sh — assemble the webOS PDK .ipk for an apkenv port.
 #
-# Ships ONLY the runtime (apkenv binary + harvested gingerbread bionic libs +
-# device libEGL + icon/appinfo). The copyrighted game apk and its extracted
-# asset root are NOT bundled — they stay on the writable /media/internal
-# partition (the binary defaults to /media/internal/wheresmywater.apk via
-# APKENV_DEFAULT_APK). This sidesteps both the .ipk size and the game
-# redistribution question, and matches the current on-device layout.
+# (APPID/APK default to Where's My Water?, the first port; every other game
+# passes them. Per-game invocations are in plan/<GAME>.md.)
 #
 # Builds a SELF-CONTAINED .ipk: the apkenv runtime + harvested bionic libs +
 # device libEGL + the game .apk, all inside the app dir. A fresh device needs

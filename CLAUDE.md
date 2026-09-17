@@ -2,7 +2,7 @@
 
 This folder is a workspace for running **Android NDK games** natively on **webOS** (Palm Pre / HP TouchPad) via a **slim apkenv-based wrapper** — **no ACL** (OpenMobile's full Android runtime). The approach: bionic-linker-as-library + fake-JNI + a webOS SDL/PDL backend + a per-game module.
 
-> This is the **Android NDK shim track**, split off from the original `driver` workspace. The sibling **PDK `.ipk`-patching track** (Pre→TouchPad binary patches of native webOS games) now lives at `/home/jonwise/Projects/touchpad-pdk`.
+> This is the **Android NDK shim track**, split off from the original `driver` workspace. The sibling **PDK `.ipk`-patching track** (Pre→TouchPad binary patches of native webOS games) lives in its own repo: [https://github.com/webOSArchive/Pre-PDK-to-TouchPad-Ports](https://github.com/webOSArchive/Pre-PDK-to-TouchPad-Ports).
 
 ## Start here
 - **`PORTING-PLAYBOOK.md`** — the METHOD for the next game: derive the engine→Java host contract
@@ -15,10 +15,68 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
   - GLES1 fixed-function rotation hacks for a portrait game on the landscape framebuffer;
   - touch = **`PDL_Init` before `SDL_Init`** (+aggression/gestures) **and feed the engine normalized 0..1 coords** (read the game's Java `onTouchEvent`/`copyTouches` via `baksmali` — that's what ACL runs).
   - The webOS MCP `webos://knowledge/pdk` resource (3-layer compositor + PDL touch) was decisive.
-- Cross-session methodology also lives in Claude memory: `wrapper-spike-progress` (the live state of the Where's My Water spike) + `android-apk-port-triage` + `acl-anatomy` + `templerun2-port-analysis`.
+- **`plan/memory/`** — the Claude memory for this project, exported into the repo (index:
+  `plan/memory/MEMORY.md`). It holds the working rules the user set (systematic not brute force,
+  don't touch shipped ports, trust the operator's diagnosis) and the cross-game lessons
+  (`android-apk-port-triage` has the candidate verdicts). Claude's live memory is machine-local —
+  see *Moving to another machine* below to restore it.
 
-## What's in this folder
-- **`android-candidates/`** — candidate `.apk`s for porting (incl. `PvZ HD v.1.1 ANDROID.apk`, the shipped one): `wheresmywater_1.0.2.apk` (the active spike), `wheresmywater2_1.0.1.apk`, `cut-the-rope_2.3.apk`, `fruitninja_1.8.8.apk`, `bejeweledblitz_1.4.4.apk`, `flappybird_1.0.apk`, `templerun2_1.2.1.apk`.
+## Resume here (as of 2026-09-17)
+Nine games shipped (see the README status table); the project is paused, nothing is in flight.
+- **Last session:** RoboCop 1.0.0 released and committed (`plan/ROBOCOP.md`). The README status
+  section was rewritten and a repo audit (IP / cruft / onboarding) was run the same day.
+- **Open threads, none urgent:**
+  - Where's My Water? 2 stalls on multi-threaded GL loading (`plan/STAGE-5-generalize.md` pt4).
+  - Aralon's outdoor lighting is slightly less warm than on a Mali tablet — parked by the user.
+  - Temple Run 2 / Aralon have not been re-run on a binary with the Unity 4.2 changes. Their shipped
+    `.ipk`s carry their own binaries, so this only matters if one is repackaged; the new paths are
+    gated off for them. Do one launch test if that happens.
+- **Candidates in `android-candidates/` not yet attempted** (verdicts in
+  `plan/memory/android-apk-port-triage.md`): **Fruit Ninja 2.1.2** (✅ triaged, Mortar + OBB — the
+  most promising), **Bejeweled Blitz** (native SexyApp, OpenSL-only — the OpenSL sink from Tiny Death
+  Star now exists), Temple Run 1.6.1 (Unity). Ruled out: Cut the Rope, Flappy Bird, both Space Cats
+  (Dalvik/Java), PvZ 2 and PvZ free (freemium, online assets).
+- **Method for the next game:** `PORTING-PLAYBOOK.md`, then `apkenv/modules/README.md` (module
+  skeleton, the hand-kept `SOURCES` list in `build-webos.sh`, engine → module table) and
+  `apkenv/ENV-VARS.md` (all 98 `APKENV_*` switches). The RoboCop trail is the most recent worked
+  example of a big Unity title.
+- **No top-level LICENSE yet** for the original code (the user's call); third-party licenses are in
+  `NOTICE.md`.
+
+## Moving to another machine
+**1. Back up what git does not carry.** The repo is the toolkit only; game content is gitignored.
+| Path | What | Irreplaceable? |
+|---|---|---|
+| `android-candidates/` (1.2 GB) | donor apks + OBBs | yes — you can only re-acquire them |
+| `apkenv/packaging/extras/pvzhd/data/` (63 MB) | hand-converted PvZ HD OGGs | **yes — no regen script, only copy** |
+| `apkenv/packaging/wheresmywater.apk` | the patched WMW apk | no — `apkenv/wmw-patch/bake.py` rebuilds it from the donor (library md5-checked against the shipped one) |
+| `apkenv/packaging/extras/wheresmywater2/icon.png` | WMW2 launcher icon | small; keep |
+| `apkenv/packaging/out/*.ipk` | the released packages | rebuildable, but they are the known-good builds — keep |
+| `apkenv/packaging/*.apk` (other games) | working copies | regen: `tools/rc-stage.sh` (RoboCop), `tools/ds-stage.sh` (Dead Space); the rest are copies of the donor |
+| `apkenv/packaging/extras/{templerun2,tinydeathstar,robocop}/` | PCM/splash payloads, RoboCop OBB copy | regen: `tools/tr2-extract-music.sh`, `tools/tr2-extract-splash.sh` (commands in `plan/TEMPLERUN2-RENDER-INPUT.md`, `plan/TINY-DEATH-STAR.md`), `rc-stage.sh` |
+| `apkenv/devlibs/libEGL.so` | HP proprietary, harvested | no — `build-webos.sh` re-harvests from a connected TouchPad |
+| `plan/logs/`, `apkenv/packaging/out/screenshots/`, `.../icons/` | run logs, grabs, icons | no — nice to have |
+
+**2. Host setup** (Ubuntu 24.04 was the last host):
+- PalmPDK at `/opt/PalmPDK` (headers, device libs, `arm-gcc` 4.3.3) and PalmSDK tools on PATH
+  (`palm-package`, `palm-install`, `palm-launch`, `novacom`; the `novacomd` service running).
+- `sudo apt install gcc-13-arm-linux-gnueabi g++-13-arm-linux-gnueabi` — the compile half of the
+  two-toolchain build (it was apt-removed once already; `build-webos.sh` fails with
+  "arm-linux-gnueabi-gcc-13: command not found").
+- `aapt`, `apktool`, `baksmali`, `unzip`/`zip`, `xz`, ImageMagick (`convert`/`identify`), `python3`.
+  For IL dumps of Unity C# assemblies the RoboCop session used the pure-Python `dnfile` + `dncil`
+  wheels (`pip install dnfile dncil`).
+- Only to rebuild the host Mono runtimes (both are committed prebuilt under `apkenv/hostlibs/`):
+  autoconf, automake, libtool, bison, git, and network access —
+  `apkenv/tools/build-mono-webos.sh [unity3.5|unity4.2]` clones Unity's Mono fork into `/tmp`.
+- On the TouchPad: Developer Mode, USB; `strace` is at `/usr/bin/strace` (managed I/O of the host
+  Mono is invisible to apkenv's tracers — see `plan/memory/host-runtime-bypasses-apkenv-hooks.md`).
+
+**3. Restore Claude's memory.** Claude Code keeps it per checkout path in
+`~/.claude/projects/<path with / replaced by ->/memory/`. After cloning, copy it back, e.g. for a
+checkout at `~/Projects/webos-android`:
+`mkdir -p ~/.claude/projects/-home-$USER-Projects-webos-android/memory && cp plan/memory/*.md "$_"`.
+When memory changes in a session, re-export it into `plan/memory/` before committing.
 
 ## Current state
 - **Star Wars: Tiny Death Star 1.4.1 (Cocos2d-x 2.0.4) — ported in ONE SESSION (2026-09-16),

@@ -11,7 +11,8 @@ compat/gen/gles_serialize.c
 
 # session logs and working binary patches (large, regenerable)
 *.log
-wmw-patch/
+wmw-patch/*.so
+wmw-patch/*.apk
 
 # packaging build artifacts + copyrighted game icon
 packaging/out/

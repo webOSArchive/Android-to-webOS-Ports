@@ -91,8 +91,9 @@ CFLAGS="$CFLAGS -DAPKENV_DEFAULT_APK=\"/media/internal/wheresmywater.apk\""
 CFLAGS="$CFLAGS -Wno-deprecated-declarations -fgnu89-inline -fno-builtin -fno-stack-protector"
 CFLAGS="$CFLAGS -include compat/pdk_compat.h"
 
-# ---- source list (mirrors makefile SOURCES, but only platform/webos.c and
-#      only the wheresmywater module) ----
+# ---- source list (mirrors makefile SOURCES, but only the webOS platform files
+#      and the maintained modules; a NEW MODULE MUST BE ADDED HERE by hand -
+#      see modules/README.md) ----
 SOURCES="apkenv.c"
 SOURCES="$SOURCES $(ls linker/*.c)"
 SOURCES="$SOURCES $(ls compat/*.c) compat/gen/gles_serialize.c"

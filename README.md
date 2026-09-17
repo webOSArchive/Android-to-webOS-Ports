@@ -7,10 +7,10 @@ linker loaded as a library** + a **fake-JNI** layer + a **webOS SDL/PDL backend*
 + a small **per-game module**. The game's own native engine `.so` is loaded and
 driven directly through its JNI entry points; there is no Java VM.
 
-> **Worked example — Where's My Water?** boots, renders full-screen upright
-> **portrait**, is **touch-playable** (carve-by-drag + HUD), has **sound** (FMOD
-> → AudioTrack pump), and installs as a **one-tap webOS `.ipk`** that launches
-> from the launcher. End-to-end on real hardware.
+> **Nine games run this way today** — from Where's My Water? (the first port) to
+> Unity 4.2 shooters like RoboCop — each installed as a **one-tap webOS `.ipk`**
+> that launches from the launcher, with touch and sound, on real hardware. See
+> [Status](#status).
 
 **This is a toolkit and methodology, not a complete solution.** It is **not an
 emulator** and not a one-click converter. It gives you the scaffolding — the
@@ -25,7 +25,7 @@ stubbable set of JNI entry points. Apps that are mostly **Java/Dalvik**, lean on
 Android frameworks (WebView, Play Services, complex UI, heavy audio/media,
 DRM/networking), depend on native features webOS lacks, or ship only `arm64`/x86
 are poor fits — some are infeasible. **Triage before you invest** (see
-`CLAUDE.md`); expect that some games simply won't work.
+`PORTING-PLAYBOOK.md` and `android-candidates/README.md`); expect that some games simply won't work.
 
 It is also a **bring-your-own-apk toolkit**: it contains the porter, scripts,
 methodology, and docs — **no game code or copyrighted content**. You supply the
@@ -71,9 +71,25 @@ the hands-on field guide is [`android-port-shim.md`](android-port-shim.md).
   onto PalmPDK's old glibc-2.4 headers, link with PalmPDK gcc 4.3.3 — so symbols
   bind to the device's glibc 2.4. The rationale is documented at the top of
   `apkenv/build-webos.sh`; don't "simplify" it.)
-- Standard host tools: `unzip`, and optionally `baksmali` (to read a game's
-  `classes.dex` when writing a new module) and `imagemagick` (`convert`, to
-  resize a launcher icon).
+  Install it with `sudo apt install gcc-13-arm-linux-gnueabi g++-13-arm-linux-gnueabi`
+  (Ubuntu 24.04 was the last build host).
+- **Host tools:** `python3` (the build generates `compat/gen/gles_serialize.c`),
+  `unzip`/`zip`, `aapt` (packaging reads the launcher icon from the manifest),
+  ImageMagick (`convert`, to resize the icon), `xz`.
+- **For reverse-engineering a new game:** `baksmali`/`apktool` (read the Java
+  host), `readelf`/`objdump`, and `ffmpeg` for the audio/splash extract scripts.
+- **Only to rebuild the prebuilt Mono runtimes** in `apkenv/hostlibs/`: autoconf,
+  automake, libtool, bison, perl, git and network access
+  (`apkenv/tools/build-mono-webos.sh [unity3.5|unity4.2]`).
+- PalmPDK and PalmSDK are no longer distributed by HP; you need archived
+  installers of both.
+
+**Reading order:** this README → [`PORTING-PLAYBOOK.md`](PORTING-PLAYBOOK.md)
+(the method) → [`apkenv/modules/README.md`](apkenv/modules/README.md) (writing
+and wiring a module) → the trail for the closest engine in `plan/` →
+[`apkenv/ENV-VARS.md`](apkenv/ENV-VARS.md) (every `APKENV_*` switch) →
+[`android-port-shim.md`](android-port-shim.md) (field guide).
+`android-runtime-architecture.md` and `plan/STAGE-*.md` are background.
 
 ---
 
@@ -127,7 +143,7 @@ refuses a same-or-lower version.
 
 ## Porting a new game
 
-1. **Triage the apk** (see `CLAUDE.md`): native NDK engine, GLES, few JNI classes
+1. **Triage the apk** (see `PORTING-PLAYBOOK.md` and `android-candidates/README.md`): native NDK engine, GLES, few JNI classes
    to stub. Drop it in `android-candidates/`.
 2. **Find the entry points** — `baksmali classes.dex` for the JNI signatures the
    Activity calls; `readelf`/`objdump` on the engine `.so` for its exports.
@@ -135,16 +151,30 @@ refuses a same-or-lower version.
    points (init → resize → loop(drawFrame) → feed touch/lifecycle). Carry
    **facts, not behavior** (entry points, portrait flag, asset root); push any
    missing *behavior* into the apkenv subsystem (input/audio/orientation), not the
-   module. The staged methodology + review checklists are in `plan/`.
-4. Build, package, install, iterate on-device (logs land in
-   `/media/internal/apkenv-*.log`).
+   module. **Add it to `SOURCES` in `apkenv/build-webos.sh`** — see
+   [`apkenv/modules/README.md`](apkenv/modules/README.md) for the skeleton and the
+   engine → module table.
+4. Build, package, install, iterate on-device: `apkenv/tools/tr2-run.sh` (full
+   install + launch + log; generic despite the name), `push-run.sh` (binary-only),
+   `grab.sh` (screenshot). Logs land in `/media/internal/apkenv-<appid>.log` and
+   are pulled to `plan/logs/`.
+
+**What is maintained:** `apkenv/build-webos.sh`, `platform/webos*.c`, `compat/`,
+`jni/`, `linker/`, `audio/`, the modules listed in `build-webos.sh`, `packaging/`
+and `tools/`. The other platforms (Pandora, Harmattan, Fremantle, Sailfish,
+PocketCHIP, Raspberry Pi, OSMesa), their `makefile`/`debian`/`rpm` build, the
+`wrapper-generator/`, and the remaining modules are upstream
+[thp/apkenv](https://github.com/thp/apkenv) heritage, kept for reference and not
+built for webOS.
 
 ---
 
 ## Distribution & licensing
 
 - **The porter is FOSS.** apkenv is BSD-licensed (`apkenv/LICENSE.apkenv`); the
-  committed bionic runtime libs are AOSP/zlib (FOSS).
+  committed bionic runtime libs are AOSP/zlib (FOSS); the prebuilt Mono runtimes
+  are LGPL, built from Unity's public Mono fork (`apkenv/hostlibs/README`).
+  Third-party attributions: [`NOTICE.md`](NOTICE.md).
 - **No game content is in this repo.** `.apk`, `.ipk` (it bundles the game),
   patched/extracted game binaries, and game art are git-ignored.
 - **`libEGL.so` is HP-proprietary** — harvested from your own device at build
@@ -158,32 +188,52 @@ refuses a same-or-lower version.
 
 ## Status
 
-Five games ship as one-tap `.ipk`s, each launching from the webOS launcher icon
-with sound:
+Nine games ship as one-tap `.ipk`s, each launching from the webOS launcher icon
+with touch and sound. The **module** column is where to start when your game uses
+the same engine.
 
-| Game | Engine | State |
-|---|---|---|
-| **Where's My Water?** | Disney/native | ✅ playable end-to-end, portrait, audio |
-| **Plants vs. Zombies HD** | Marmalade/Airplay | ✅ playable, audio, centred letterbox |
-| **Amazing Alex HD** | Rovio ka3d | ✅ playable, audio — ported in ONE pass |
-| **Temple Run 2** | Unity 3.5 + Mono | ✅ playable — portrait, touch/swipe/tilt, 3D, SFX, music, splash |
-| **Aralon: Sword and Shadow HD** | Unity 4.0.1 + Mono | ✅ playable — menus, touch, open world, SFX, dialogue, music |
-| Where's My Water? 2 | same as WMW | ☐ reaches the level, stalls on multi-threaded GL loading |
+| Game | Engine | Module | State |
+|---|---|---|---|
+| **Where's My Water?** | Disney/native | `wheresmywater.c` | ✅ playable end-to-end, portrait, audio |
+| **Plants vs. Zombies HD** | Marmalade/Airplay | `marmalade.c` | ✅ playable, audio, centred letterbox |
+| **Amazing Alex HD** | Rovio ka3d | `angrybirds.c` | ✅ playable, audio — ported in one pass |
+| **Temple Run 2** | Unity 3.5 + Mono | `unity.c` | ✅ portrait, touch/swipe/tilt, 3D, SFX, music, splash |
+| **Aralon: Sword and Shadow HD** | Unity 4.0 + Mono | `unity.c` | ✅ menus, touch, open world, SFX, dialogue, music |
+| **Fruit Ninja** | Halfbrick Mortar | `mortar.c` | ✅ every mode, 59 fps, audio, saves persist |
+| **Dead Space** | EA BLAST | `eablast.c` | ✅ menus, cutscenes, gameplay, audio (3:2 letterbox) |
+| **Star Wars: Tiny Death Star** | Cocos2d-x 2.0 | `cocos2dx.c` | ✅ portrait, touch, text, FMOD music + SFX |
+| **RoboCop** | Unity 4.2 + Mono | `unity.c` | ✅ tutorial, aiming, missions, SFX, music, 30 fps |
+| Where's My Water? 2 | same as WMW | `wheresmywater2.c` | ☐ reaches the level, stalls on multi-threaded GL loading |
 
-Capabilities the framework now has, all general rather than per-game:
+Per-game trails — what broke, how it was found, and the fix — are in `plan/`
+(e.g. `plan/ROBOCOP.md`, `plan/FRUITNINJA.md`, `plan/DEAD-SPACE.md`). Each
+packaged game's launch settings are a small `apkenv/packaging/<game>/apkenv.env`.
+
+Capabilities the framework now has, general rather than per-game (new
+behaviour is gated per engine or opt-in, so shipped ports keep their exact path):
 
 | Area | State |
 |---|---|
-| Boot / load native engine | ✅ bionic-linker-as-library + fake-JNI |
-| Display — full-screen upright portrait | ✅ render-to-FBO, ES1 *and* ES2 (shader) present |
+| Boot / load native engine | ✅ bionic-linker-as-library + fake-JNI, engine `JNI_OnLoad` honoured |
+| Display | ✅ native landscape, letterbox, or upright portrait via render-to-FBO (ES1 *and* ES2) |
 | Input — touch, swipe, tilt | ✅ PDL touch + PDL sensors |
-| Audio — music + SFX | ✅ FMOD AudioTrack pump → lock-free ring → SDL |
-| Host-library bridge (engine's own Mono/runtime) | ✅ `compat/hostlib.c` |
+| Audio | ✅ FMOD AudioTrack pump, OpenSL ES sink (`compat/opensles.c`), lock-free ring → SDL |
+| Engine's own language runtime | ✅ host-built Mono bridged in (`compat/hostlib.c`; Unity 3.5 and 4.2 runtimes) |
+| Unity host contract | ✅ Unity 3.5 / 4.0 / 4.2 boot orders, AndroidJavaObject reflection (va_list *and* jvalue[] JNI), PlayerPrefs |
+| Unity `WWW` | ✅ host implementation: `file://` and `jar:file://` (OBB/apk) served; network fails like an offline device |
+| C# `[DllImport]` of apk libraries | ✅ Mono P/Invoke fallback through apkenv's linker, running the library's `JNI_OnLoad` |
+| Expansion files (OBB) | ✅ shipped unmodified, fed to the engine as Android would |
+| bionic `FILE` ABI | ✅ opt-in bionic-layout stdio proxies (`fileno`/`feof` macros read struct fields) |
 | Boot splash during load | ✅ host-drawn, rides the present quad |
 | Packaging — one-tap `.ipk` from the launcher | ✅ `packaging/build-ipk.sh` |
 
-Start with `PORTING-PLAYBOOK.md` for the method. `apkenv/BUILD-STATE.md` and
-`plan/` carry the full state and what's next.
+Tools for the device loop (`apkenv/tools/`): `push-run.sh` (binary-only cycle,
+md5-checked), `grab.sh` (screenshot of the GL frame — the webOS screenshot misses
+the GL layer), synthetic input for driving a port with nobody at the device, and
+tracers (`APKENV_TRACE_FILES`, `APKENV_MONO_TRACE`, `APKENV_UNITY_ICALL_TRACE`, …).
+
+Start with `PORTING-PLAYBOOK.md` for the method. `plan/` carries the full state
+and what's next.
 
 ---
 

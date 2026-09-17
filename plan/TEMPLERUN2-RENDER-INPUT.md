@@ -78,7 +78,7 @@ fails and with what config. This is the KB's own method (Tux Racer diff), just d
 2. SDL asks for `RENDERABLE_TYPE=ES2_BIT` **and** an attribute the ES2 configs don't have
    (e.g. 16-bit depth + 5/6/5 colour, or `EGL_NATIVE_VISUAL_ID`) → `BAD_ALLOC` on the surface
    or context. Fix: drop the offending attrib / pick 8/8/8/8+24 (also removes the RGB565
-   banding the touchpad-pdk track documents).
+   banding the PDK-patching track (https://github.com/webOSArchive/Pre-PDK-to-TouchPad-Ports) documents).
 3. Genuine `EGL_BAD_ALLOC` from the driver for this window (unlikely — nizovn's direct EGL
    works): last resort is creating the context ourselves on SDL's `EGLDisplay`/`EGLSurface`
    (obtainable via the same interposition of `eglCreateWindowSurface`) and accepting the
@@ -143,7 +143,7 @@ Only after G. Two halves:
 Gameplay: swipe recognition (NGUI is menu-only; the run uses `Input.touches` deltas — MOVE events
 must carry the same `pointerId` as the DOWN), accelerometer tilt (`apkenv_accelerometer` is
 wired; Unity reads `Input.acceleration` via `nativeSetInputDeviceEnabled`/sensor JNI — check
-`[UN-JNI] UNHANDLED` lines), `requiredMemory` in `appinfo.json` (touchpad-pdk: "menus fine,
+`[UN-JNI] UNHANDLED` lines), `requiredMemory` in `appinfo.json` (Pre-PDK-to-TouchPad-Ports: "menus fine,
 black when gameplay loads" = memory quota), audio verification, Chartboost/promo no-ops.
 
 ## 5. Rules this plan adds to the playbook
