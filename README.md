@@ -171,7 +171,8 @@ built for webOS.
 
 ## Distribution & licensing
 
-- **The porter is FOSS.** apkenv is BSD-licensed (`apkenv/LICENSE.apkenv`); the
+- **The porter is FOSS.** This repository is BSD 2-clause ([`LICENSE`](LICENSE)), as is
+  apkenv, which it builds on (`apkenv/LICENSE.apkenv`); the
   committed bionic runtime libs are AOSP/zlib (FOSS); the prebuilt Mono runtimes
   are LGPL, built from Unity's public Mono fork (`apkenv/hostlibs/README`).
   Third-party attributions: [`NOTICE.md`](NOTICE.md).

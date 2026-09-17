@@ -40,8 +40,7 @@ Nine games shipped (see the README status table); the project is paused, nothing
   skeleton, the hand-kept `SOURCES` list in `build-webos.sh`, engine → module table) and
   `apkenv/ENV-VARS.md` (all 98 `APKENV_*` switches). The RoboCop trail is the most recent worked
   example of a big Unity title.
-- **No top-level LICENSE yet** for the original code (the user's call); third-party licenses are in
-  `NOTICE.md`.
+- License: BSD 2-clause (`LICENSE`, matching apkenv); third-party licenses in `NOTICE.md`.
 
 ## Moving to another machine
 **1. Back up what git does not carry.** The repo is the toolkit only; game content is gitignored.
