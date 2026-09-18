@@ -380,3 +380,31 @@ slot (libpvz 0x25a9c..0x25b2c); the module never answered. Built: the answer (de
 Airplay `audioPlay(String,int)` signature fix. Full analysis, staged theories B–F and the test
 protocol: `plan/PVZ-HD-menu-freeze.md`. Device was unreachable; build md5 7379f0d0 awaits test.
 
+
+### 2026-09-18 — WMW2 re-run: the level LOADS; part 4's GL-threading diagnosis does not hold
+
+Re-staged on a freshly reset TouchPad: `com.apkenv.wheresmywater2` 1.1.0 (pristine apk, current
+binary) with the asset tree at `/media/internal/wmw2root/assets` (3090 files, pushed as one tar).
+The package's `apkenv.env` sets `APKENV_WMW2_SHARED_GL=1`, which gives libwalaber-started threads a
+real EGL context sharing SDL's (`apkenv_egl_engine_thread_contexts_enable`, the opt-in built from
+the Cut the Rope lessons).
+
+- **The operator saw the opening and loading screens complete, then black.** The log agrees:
+  `[Screen_Main] enter` → tap → `[Screen_Game] Stroyline:(0)`, level textures loaded on the main
+  thread, then the engine presents a **576x768 viewport that is black** (`tools/grab.sh`: an
+  all-black frame) while frames keep advancing (`[SDLHB]` counting, main thread only in a
+  vsync/futex wait).
+- **libwalaber created no thread at all.** The only engine `pthread_create` was
+  `routine=0x2c05cdac`, *below* libwalaber's base (`0x2c130000`): FMOD's thread. The library filter
+  correctly skipped it, so the shared-context switch had nothing to act on — **untested, neither
+  confirmed nor refuted.**
+- **Part 4's "loader thread" (`routine=0x2c054dac`) was probably that same FMOD thread**, not a
+  libwalaber GL loader (load addresses can shift between runs, so this is likely, not proven).
+  Static support: the engine has **no EGL imports**; its Java `EGLContextFactory` (`ch`) creates one
+  unshared context; and libwalaber has its own `Water::GLThreadMessageDispatcher`, which marshals
+  work *to* the GL thread. WMW2 does not appear to do GL off the render thread on Android either.
+- The "tapping play → 576x768 black" state is part 3's, reached reliably now. Not the FBO bind
+  path: `my_glBindFramebufferOES(0)` already maps to the portrait FBO (WMW1's water uses it). The
+  engine renders into its own FBOs (`bound_fbo=8/9`, 512x1024 and 384x512) just before the black.
+  **Next, if WMW2 is reopened:** instrument the level's render passes (`APKENV_GL_DEBUG`,
+  `APKENV_GL_SNAPSHOT` of the engine FBOs) — a black-render investigation, not a threading one.

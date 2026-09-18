@@ -108,8 +108,21 @@ wheresmywater2_try_init(struct SupportModule *self)
     p->global = GLOBAL_M;
 
     /* activate only for the WMW2 apk (libwalaber): the essential entrypoints resolve */
-    return (p->JNI_OnLoad && p->chassisStartup && p->renderInit &&
-            p->renderDrawFrame && p->touchBegan);
+    if (!(p->JNI_OnLoad && p->chassisStartup && p->renderInit &&
+            p->renderDrawFrame && p->touchBegan)) {
+        return 0;
+    }
+
+    /* Experiment (2026-09-18, STAGE-5 pt4): the level loader runs GL on a
+     * libwalaber worker thread, which hangs in the Adreno driver against SDL's
+     * single context. APKENV_WMW2_SHARED_GL=1 gives libwalaber's threads a real
+     * context of their own, sharing SDL's (compat/egl_wrappers.c). Off = the
+     * old behaviour, for an A/B on the same binary. */
+    const char *sg = getenv("APKENV_WMW2_SHARED_GL");
+    if (sg && sg[0] == '1') {
+        apkenv_egl_engine_thread_contexts_enable("libwalaber");
+    }
+    return 1;
 }
 
 static void

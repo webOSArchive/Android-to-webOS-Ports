@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <pthread.h>
 
 #include "jnienv.h"
 #include "../apkenv.h"
@@ -40,6 +41,78 @@
 #else
 #  define JNIENV_DEBUG_PRINTF(...)
 #endif
+
+/* ---- Unanswered generic calls (opt-in: apkenv_jni_unanswered_enable) -------
+ * Every Call*Method* below is the generic fallback: it runs only when the
+ * module's override_env did not answer the call, and it answers 0 / NULL /
+ * the GLOBAL_J sentinel without saying so (the print is debug-build only).
+ * Cut the Rope HD (another developer's port, PORTING-PLAYBOOK.md) lost four
+ * sessions to CallStaticObjectMethodV answering NULL to getPhoneModel(),
+ * which the engine dereferenced on a background thread.
+ *
+ * Enabled, a module gets two things:
+ *   - [JNI-UNANSWERED] once per class.method(sig), then at 100/10k/1M calls,
+ *     in every build, so the next gap names itself in the device log;
+ *   - String-returning calls answer an empty jstring instead of NULL or the
+ *     sentinel, which the engine would feed to GetStringUTFChars -> strlen.
+ *     That is a crash guard, not an answer: implement the method.
+ * Off by default, so shipped ports keep their exact behaviour. */
+int apkenv_jni_unanswered_on = 0;
+
+void
+apkenv_jni_unanswered_enable(void)
+{
+    apkenv_jni_unanswered_on = 1;
+    fprintf(stderr, "[JNI-UNANSWERED] reporting generic Call*Method fallbacks\n");
+}
+
+static int
+jni_returns_string(jmethodID m)
+{
+    const char *r = (m && m->sig) ? strrchr(m->sig, ')') : NULL;
+    return r && strcmp(r + 1, "Ljava/lang/String;") == 0;
+}
+
+#define JNI_UNANSWERED_MAX 1024
+static struct { char *key; unsigned long n; } jni_unanswered_seen[JNI_UNANSWERED_MAX];
+static int jni_unanswered_count = 0;
+static pthread_mutex_t jni_unanswered_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void
+jni_unanswered(jmethodID m, const char *fn)
+{
+    char key[512];
+    const char *cls = (m && m->clazz) ? ((struct dummy_jclass *)m->clazz)->name : NULL;
+    snprintf(key, sizeof(key), "%s %s.%s%s", fn, cls ? cls : "?",
+            (m && m->name) ? m->name : "?", (m && m->sig) ? m->sig : "");
+
+    unsigned long n = 0;
+    pthread_mutex_lock(&jni_unanswered_lock);
+    int i;
+    for (i = 0; i < jni_unanswered_count; i++) {
+        if (strcmp(jni_unanswered_seen[i].key, key) == 0) {
+            n = ++jni_unanswered_seen[i].n;
+            break;
+        }
+    }
+    if (i == jni_unanswered_count) {
+        if (jni_unanswered_count < JNI_UNANSWERED_MAX) {
+            jni_unanswered_seen[i].key = strdup(key);
+            jni_unanswered_seen[i].n = 1;
+            jni_unanswered_count++;
+        }
+        n = 1;
+    }
+    pthread_mutex_unlock(&jni_unanswered_lock);
+
+    if (n == 1 || n == 100 || n == 10000 || n == 1000000) {
+        fprintf(stderr, "[JNI-UNANSWERED] %s (call #%lu)%s\n", key, n,
+                jni_returns_string(m) ? " -> \"\"" : "");
+    }
+}
+
+#define JNI_UNANSWERED(env, m, fn) \
+    do { if (apkenv_jni_unanswered_on) jni_unanswered((m), (fn)); } while (0)
 
 const char *envnames[] = 
 {
@@ -655,6 +728,9 @@ JNIEnv_GetMethodID(JNIEnv* p0, jclass clazz, const char* name, const char* sig)
 jobject
 JNIEnv_CallObjectMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallObjectMethod");
+    if (apkenv_jni_unanswered_on && jni_returns_string(p2))
+        return JNIEnv_NewStringUTF(p0, "");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallObjectMethod(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return NULL;
 }
@@ -663,6 +739,9 @@ JNIEnv_CallObjectMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 jobject
 JNIEnv_CallObjectMethodV(JNIEnv *env, jobject p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(env, p2, "JNIEnv_CallObjectMethodV");
+    if (apkenv_jni_unanswered_on && jni_returns_string(p2))
+        return JNIEnv_NewStringUTF(env, "");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallObjectMethodV(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return GLOBAL_J(env);
 }
@@ -671,6 +750,9 @@ JNIEnv_CallObjectMethodV(JNIEnv *env, jobject p1, jmethodID p2, va_list p3)
 jobject
 JNIEnv_CallObjectMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallObjectMethodA");
+    if (apkenv_jni_unanswered_on && jni_returns_string(p2))
+        return JNIEnv_NewStringUTF(p0, "");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallObjectMethodA(%p, %s/%s, %p)\n", p1, p2->name, p2->sig, p3);
     return NULL;
 }
@@ -679,6 +761,7 @@ JNIEnv_CallObjectMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 jboolean
 JNIEnv_CallBooleanMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallBooleanMethod");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallBooleanMethod(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -687,6 +770,7 @@ JNIEnv_CallBooleanMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 jboolean
 JNIEnv_CallBooleanMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallBooleanMethodV");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallBooleanMethodV(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -695,6 +779,7 @@ JNIEnv_CallBooleanMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 jboolean
 JNIEnv_CallBooleanMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallBooleanMethodA");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallBooleanMethodA(%p, %s/%s, %p)\n", p1, p2->name, p2->sig, p3);
     return 0;
 }
@@ -703,6 +788,7 @@ JNIEnv_CallBooleanMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 jbyte
 JNIEnv_CallByteMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallByteMethod");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallByteMethod(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -711,6 +797,7 @@ JNIEnv_CallByteMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 jbyte
 JNIEnv_CallByteMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallByteMethodV");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallByteMethodV(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -719,6 +806,7 @@ JNIEnv_CallByteMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 jbyte
 JNIEnv_CallByteMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallByteMethodA");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallByteMethodA(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -727,6 +815,7 @@ JNIEnv_CallByteMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 jchar
 JNIEnv_CallCharMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallCharMethod");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallCharMethod(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -735,6 +824,7 @@ JNIEnv_CallCharMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 jchar
 JNIEnv_CallCharMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallCharMethodV");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallCharMethodV(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -743,6 +833,7 @@ JNIEnv_CallCharMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 jchar
 JNIEnv_CallCharMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallCharMethodA");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallCharMethodA(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -751,6 +842,7 @@ JNIEnv_CallCharMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 jshort
 JNIEnv_CallShortMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallShortMethod");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallShortMethod(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -759,6 +851,7 @@ JNIEnv_CallShortMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 jshort
 JNIEnv_CallShortMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallShortMethodV");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallShortMethodV(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -767,6 +860,7 @@ JNIEnv_CallShortMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 jshort
 JNIEnv_CallShortMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallShortMethodA");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallShortMethodA(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -775,6 +869,7 @@ JNIEnv_CallShortMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 jint
 JNIEnv_CallIntMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallIntMethod");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallIntMethod(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -783,6 +878,7 @@ JNIEnv_CallIntMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 jint
 JNIEnv_CallIntMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallIntMethodV");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallIntMethodV(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -791,6 +887,7 @@ JNIEnv_CallIntMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 jint
 JNIEnv_CallIntMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallIntMethodA");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallIntMethodA(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -799,6 +896,7 @@ JNIEnv_CallIntMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 jlong
 JNIEnv_CallLongMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallLongMethod");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallLongMethod(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -807,6 +905,7 @@ JNIEnv_CallLongMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 jlong
 JNIEnv_CallLongMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallLongMethodV");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallLongMethodV(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -815,6 +914,7 @@ JNIEnv_CallLongMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 jlong
 JNIEnv_CallLongMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallLongMethodA");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallLongMethodA(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0;
 }
@@ -823,6 +923,7 @@ JNIEnv_CallLongMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 jfloat
 JNIEnv_CallFloatMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallFloatMethod");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallFloatMethod(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0.f;
 }
@@ -831,6 +932,7 @@ JNIEnv_CallFloatMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 jfloat
 JNIEnv_CallFloatMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallFloatMethodV");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallFloatMethodV(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0.f;
 }
@@ -839,6 +941,7 @@ JNIEnv_CallFloatMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 jfloat
 JNIEnv_CallFloatMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallFloatMethodA");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallFloatMethodA(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0.f;
 }
@@ -847,6 +950,7 @@ JNIEnv_CallFloatMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 jdouble
 JNIEnv_CallDoubleMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallDoubleMethod");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallDoubleMethod(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0.;
 }
@@ -855,6 +959,7 @@ JNIEnv_CallDoubleMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 jdouble
 JNIEnv_CallDoubleMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallDoubleMethodV");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallDoubleMethodV(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0.;
 }
@@ -863,6 +968,7 @@ JNIEnv_CallDoubleMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 jdouble
 JNIEnv_CallDoubleMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallDoubleMethodA");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallDoubleMethodA(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
     return 0.;
 }
@@ -871,6 +977,7 @@ JNIEnv_CallDoubleMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 void
 JNIEnv_CallVoidMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallVoidMethod");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallVoidMethod(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
 }
 
@@ -878,6 +985,7 @@ JNIEnv_CallVoidMethod(JNIEnv* p0, jobject p1, jmethodID p2, ...)
 void
 JNIEnv_CallVoidMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallVoidMethodV");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallVoidMethodV(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
 }
 
@@ -885,6 +993,7 @@ JNIEnv_CallVoidMethodV(JNIEnv* p0, jobject p1, jmethodID p2, va_list p3)
 void
 JNIEnv_CallVoidMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallVoidMethodA");
     JNIENV_DEBUG_PRINTF("JNIEnv_CallVoidMethodA(%p, %s/%s, ...)\n", p1, p2->name, p2->sig);
 }
 
@@ -892,6 +1001,9 @@ JNIEnv_CallVoidMethodA(JNIEnv* p0, jobject p1, jmethodID p2, jvalue* p3)
 jobject
 JNIEnv_CallNonvirtualObjectMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, ...)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualObjectMethod");
+    if (apkenv_jni_unanswered_on && jni_returns_string(p3))
+        return JNIEnv_NewStringUTF(p0, "");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualObjectMethod(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return NULL;
@@ -901,6 +1013,9 @@ JNIEnv_CallNonvirtualObjectMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p
 jobject
 JNIEnv_CallNonvirtualObjectMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, va_list p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualObjectMethodV");
+    if (apkenv_jni_unanswered_on && jni_returns_string(p3))
+        return JNIEnv_NewStringUTF(p0, "");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualObjectMethodV(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return NULL;
@@ -910,6 +1025,9 @@ JNIEnv_CallNonvirtualObjectMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID 
 jobject
 JNIEnv_CallNonvirtualObjectMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, jvalue* p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualObjectMethodA");
+    if (apkenv_jni_unanswered_on && jni_returns_string(p3))
+        return JNIEnv_NewStringUTF(p0, "");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualObjectMethodA(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return NULL;
@@ -919,6 +1037,7 @@ JNIEnv_CallNonvirtualObjectMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID 
 jboolean
 JNIEnv_CallNonvirtualBooleanMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, ...)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualBooleanMethod");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualBooleanMethod(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -928,6 +1047,7 @@ JNIEnv_CallNonvirtualBooleanMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID 
 jboolean
 JNIEnv_CallNonvirtualBooleanMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, va_list p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualBooleanMethodV");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualBooleanMethodV(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -937,6 +1057,7 @@ JNIEnv_CallNonvirtualBooleanMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID
 jboolean
 JNIEnv_CallNonvirtualBooleanMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, jvalue* p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualBooleanMethodA");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualBooleanMethodA(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -946,6 +1067,7 @@ JNIEnv_CallNonvirtualBooleanMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID
 jbyte
 JNIEnv_CallNonvirtualByteMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, ...)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualByteMethod");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualByteMethod(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -955,6 +1077,7 @@ JNIEnv_CallNonvirtualByteMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3,
 jbyte
 JNIEnv_CallNonvirtualByteMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, va_list p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualByteMethodV");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualByteMethodV(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -964,6 +1087,7 @@ JNIEnv_CallNonvirtualByteMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3
 jbyte
 JNIEnv_CallNonvirtualByteMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, jvalue* p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualByteMethodA");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualByteMethodA(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -973,6 +1097,7 @@ JNIEnv_CallNonvirtualByteMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3
 jchar
 JNIEnv_CallNonvirtualCharMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, ...)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualCharMethod");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualCharMethod(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -982,6 +1107,7 @@ JNIEnv_CallNonvirtualCharMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3,
 jchar
 JNIEnv_CallNonvirtualCharMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, va_list p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualCharMethodV");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualCharMethodV(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -991,6 +1117,7 @@ JNIEnv_CallNonvirtualCharMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3
 jchar
 JNIEnv_CallNonvirtualCharMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, jvalue* p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualCharMethodA");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualCharMethodA(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -1000,6 +1127,7 @@ JNIEnv_CallNonvirtualCharMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3
 jshort
 JNIEnv_CallNonvirtualShortMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, ...)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualShortMethod");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualShortMethod(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -1009,6 +1137,7 @@ JNIEnv_CallNonvirtualShortMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3
 jshort
 JNIEnv_CallNonvirtualShortMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, va_list p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualShortMethodV");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualShortMethodV(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -1018,6 +1147,7 @@ JNIEnv_CallNonvirtualShortMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p
 jshort
 JNIEnv_CallNonvirtualShortMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, jvalue* p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualShortMethodA");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualShortMethodA(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -1027,6 +1157,7 @@ JNIEnv_CallNonvirtualShortMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID p
 jint
 JNIEnv_CallNonvirtualIntMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, ...)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualIntMethod");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualIntMethod(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -1036,6 +1167,7 @@ JNIEnv_CallNonvirtualIntMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, 
 jint
 JNIEnv_CallNonvirtualIntMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, va_list p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualIntMethodV");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualIntMethodV(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -1045,6 +1177,7 @@ JNIEnv_CallNonvirtualIntMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3,
 jint
 JNIEnv_CallNonvirtualIntMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, jvalue* p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualIntMethodA");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualIntMethodA(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -1054,6 +1187,7 @@ JNIEnv_CallNonvirtualIntMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3,
 jlong
 JNIEnv_CallNonvirtualLongMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, ...)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualLongMethod");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualLongMethod(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -1063,6 +1197,7 @@ JNIEnv_CallNonvirtualLongMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3,
 jlong
 JNIEnv_CallNonvirtualLongMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, va_list p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualLongMethodV");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualLongMethodV(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -1072,6 +1207,7 @@ JNIEnv_CallNonvirtualLongMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3
 jlong
 JNIEnv_CallNonvirtualLongMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, jvalue* p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualLongMethodA");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualLongMethodA(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0;
@@ -1081,6 +1217,7 @@ JNIEnv_CallNonvirtualLongMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3
 jfloat
 JNIEnv_CallNonvirtualFloatMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, ...)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualFloatMethod");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualFloatMethod(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0.f;
@@ -1090,6 +1227,7 @@ JNIEnv_CallNonvirtualFloatMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3
 jfloat
 JNIEnv_CallNonvirtualFloatMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, va_list p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualFloatMethodV");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualFloatMethodV(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0.f;
@@ -1099,6 +1237,7 @@ JNIEnv_CallNonvirtualFloatMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p
 jfloat
 JNIEnv_CallNonvirtualFloatMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, jvalue* p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualFloatMethodA");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualFloatMethodA(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0.f;
@@ -1108,6 +1247,7 @@ JNIEnv_CallNonvirtualFloatMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID p
 jdouble
 JNIEnv_CallNonvirtualDoubleMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, ...)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualDoubleMethod");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualDoubleMethod(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0.;
@@ -1117,6 +1257,7 @@ JNIEnv_CallNonvirtualDoubleMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p
 jdouble
 JNIEnv_CallNonvirtualDoubleMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, va_list p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualDoubleMethodV");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualDoubleMethodV(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0.;
@@ -1126,6 +1267,7 @@ JNIEnv_CallNonvirtualDoubleMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID 
 jdouble
 JNIEnv_CallNonvirtualDoubleMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, jvalue* p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualDoubleMethodA");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualDoubleMethodA(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
     return 0.;
@@ -1135,6 +1277,7 @@ JNIEnv_CallNonvirtualDoubleMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID 
 void
 JNIEnv_CallNonvirtualVoidMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, ...)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualVoidMethod");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualVoidMethod(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
 }
@@ -1143,6 +1286,7 @@ JNIEnv_CallNonvirtualVoidMethod(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3,
 void
 JNIEnv_CallNonvirtualVoidMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, va_list p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualVoidMethodV");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualVoidMethodV(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
 }
@@ -1151,6 +1295,7 @@ JNIEnv_CallNonvirtualVoidMethodV(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3
 void
 JNIEnv_CallNonvirtualVoidMethodA(JNIEnv* p0, jobject p1, jclass p2, jmethodID p3, jvalue* p4)
 {
+    JNI_UNANSWERED(p0, p3, "JNIEnv_CallNonvirtualVoidMethodA");
     struct dummy_jclass *jcl = (struct dummy_jclass*)p2;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallNonvirtualVoidMethodA(%p, %s, %s/%s, ...)\n", p1, jcl->name, p3->name, p3->sig);
 }
@@ -1319,6 +1464,9 @@ JNIEnv_GetStaticMethodID(JNIEnv* p0, jclass clazz, const char* name, const char*
 jobject
 JNIEnv_CallStaticObjectMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticObjectMethod");
+    if (apkenv_jni_unanswered_on && jni_returns_string(p2))
+        return JNIEnv_NewStringUTF(p0, "");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticObjectMethod(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1329,6 +1477,9 @@ JNIEnv_CallStaticObjectMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 jobject
 JNIEnv_CallStaticObjectMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticObjectMethodV");
+    if (apkenv_jni_unanswered_on && jni_returns_string(p2))
+        return JNIEnv_NewStringUTF(p0, "");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticObjectMethodV(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1339,6 +1490,9 @@ JNIEnv_CallStaticObjectMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 jobject
 JNIEnv_CallStaticObjectMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticObjectMethodA");
+    if (apkenv_jni_unanswered_on && jni_returns_string(p2))
+        return JNIEnv_NewStringUTF(p0, "");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticObjectMethodA(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1349,6 +1503,7 @@ JNIEnv_CallStaticObjectMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 jboolean
 JNIEnv_CallStaticBooleanMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticBooleanMethod");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticBooleanMethod(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1359,6 +1514,7 @@ JNIEnv_CallStaticBooleanMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 jboolean
 JNIEnv_CallStaticBooleanMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticBooleanMethodV");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticBooleanMethodV(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1369,6 +1525,7 @@ JNIEnv_CallStaticBooleanMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 jboolean
 JNIEnv_CallStaticBooleanMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticBooleanMethodA");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticBooleanMethodA(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1379,6 +1536,7 @@ JNIEnv_CallStaticBooleanMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 jbyte
 JNIEnv_CallStaticByteMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticByteMethod");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticByteMethod(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1389,6 +1547,7 @@ JNIEnv_CallStaticByteMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 jbyte
 JNIEnv_CallStaticByteMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticByteMethodV");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticByteMethodV(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1399,6 +1558,7 @@ JNIEnv_CallStaticByteMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 jbyte
 JNIEnv_CallStaticByteMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticByteMethodA");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticByteMethodA(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1409,6 +1569,7 @@ JNIEnv_CallStaticByteMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 jchar
 JNIEnv_CallStaticCharMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticCharMethod");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticCharMethod(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1419,6 +1580,7 @@ JNIEnv_CallStaticCharMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 jchar
 JNIEnv_CallStaticCharMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticCharMethodV");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticCharMethodV(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1429,6 +1591,7 @@ JNIEnv_CallStaticCharMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 jchar
 JNIEnv_CallStaticCharMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticCharMethodA");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticCharMethodA(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1439,6 +1602,7 @@ JNIEnv_CallStaticCharMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 jshort
 JNIEnv_CallStaticShortMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticShortMethod");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticShortMethod(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1449,6 +1613,7 @@ JNIEnv_CallStaticShortMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 jshort
 JNIEnv_CallStaticShortMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticShortMethodV");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticShortMethodV(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1459,6 +1624,7 @@ JNIEnv_CallStaticShortMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 jshort
 JNIEnv_CallStaticShortMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticShortMethodA");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticShortMethodA(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1469,6 +1635,7 @@ JNIEnv_CallStaticShortMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 jint
 JNIEnv_CallStaticIntMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticIntMethod");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticIntMethod(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1479,6 +1646,7 @@ JNIEnv_CallStaticIntMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 jint
 JNIEnv_CallStaticIntMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticIntMethodV");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticIntMethodV(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1489,6 +1657,7 @@ JNIEnv_CallStaticIntMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 jint
 JNIEnv_CallStaticIntMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticIntMethodA");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticIntMethodA(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1499,6 +1668,7 @@ JNIEnv_CallStaticIntMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 jlong
 JNIEnv_CallStaticLongMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticLongMethod");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticLongMethod(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1509,6 +1679,7 @@ JNIEnv_CallStaticLongMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 jlong
 JNIEnv_CallStaticLongMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticLongMethodV");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticLongMethodV(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1519,6 +1690,7 @@ JNIEnv_CallStaticLongMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 jlong
 JNIEnv_CallStaticLongMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticLongMethodA");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticLongMethodA(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1529,6 +1701,7 @@ JNIEnv_CallStaticLongMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 jfloat
 JNIEnv_CallStaticFloatMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticFloatMethod");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticFloatMethod(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1539,6 +1712,7 @@ JNIEnv_CallStaticFloatMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 jfloat
 JNIEnv_CallStaticFloatMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticFloatMethodV");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticFloatMethodV(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1549,6 +1723,7 @@ JNIEnv_CallStaticFloatMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 jfloat
 JNIEnv_CallStaticFloatMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticFloatMethodA");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticFloatMethodA(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1559,6 +1734,7 @@ JNIEnv_CallStaticFloatMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 jdouble
 JNIEnv_CallStaticDoubleMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticDoubleMethod");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticDoubleMethod(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1569,6 +1745,7 @@ JNIEnv_CallStaticDoubleMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 jdouble
 JNIEnv_CallStaticDoubleMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticDoubleMethodV");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticDoubleMethodV(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1579,6 +1756,7 @@ JNIEnv_CallStaticDoubleMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 jdouble
 JNIEnv_CallStaticDoubleMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticDoubleMethodA");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticDoubleMethodA(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1589,6 +1767,7 @@ JNIEnv_CallStaticDoubleMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 void
 JNIEnv_CallStaticVoidMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticVoidMethod");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticVoidMethod(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1598,6 +1777,7 @@ JNIEnv_CallStaticVoidMethod(JNIEnv* p0, jclass p1, jmethodID p2, ...)
 void
 JNIEnv_CallStaticVoidMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticVoidMethodV");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticVoidMethodV(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);
@@ -1607,6 +1787,7 @@ JNIEnv_CallStaticVoidMethodV(JNIEnv* p0, jclass p1, jmethodID p2, va_list p3)
 void
 JNIEnv_CallStaticVoidMethodA(JNIEnv* p0, jclass p1, jmethodID p2, jvalue* p3)
 {
+    JNI_UNANSWERED(p0, p2, "JNIEnv_CallStaticVoidMethodA");
     struct dummy_jclass *jcl = p1;
     JNIENV_DEBUG_PRINTF("JNIEnv_CallStaticVoidMethodA(%s, %s/%s, ...)\n",
             jcl->name, p2->name, p2->sig);

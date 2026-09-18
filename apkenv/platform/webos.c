@@ -55,6 +55,15 @@ static struct PlatformPriv priv;
  * known-down finger. The module aggregates these into multi-touch arrays. */
 #define WEBOS_MAX_FINGERS 5
 static int finger_down[WEBOS_MAX_FINGERS];
+/* Touch slop (apkenv_touch_android_enable): Android's gesture layer drops the
+ * digitizer's 2-3 px jitter before an app sees it; the TouchPad forwards all of
+ * it, and an engine whose tap-vs-drag test treats any MOVE as a drag misses taps
+ * (Cut the Rope HD: of 13 taps only the one with zero movement worked). Until a
+ * finger leaves the slop circle its MOVEs are dropped and its UP is reported at
+ * the DOWN point, so the engine sees a clean tap. */
+static int finger_in_slop[WEBOS_MAX_FINGERS];
+static int finger_down_x[WEBOS_MAX_FINGERS];
+static int finger_down_y[WEBOS_MAX_FINGERS];
 
 static int
 webos_init(int gles_version)
@@ -108,6 +117,7 @@ webos_init(int gles_version)
     SDL_ShowCursor(0);
 
     memset(finger_down, 0, sizeof(finger_down));
+    memset(finger_in_slop, 0, sizeof(finger_in_slop));
 
     /* Accelerometer: PDL's sensor API, not SDL's joystick one. webOS 3.0.5 has
      * no joydev, so SDL_JoystickOpen(0) always returns NULL here and the SDL
@@ -221,17 +231,45 @@ webos_input_update(struct SupportModule *module)
 
         if (e.type == SDL_MOUSEBUTTONDOWN) {
             int f = e.button.which;
-            if (f >= 0 && f < WEBOS_MAX_FINGERS) finger_down[f] = 1;
+            if (f >= 0 && f < WEBOS_MAX_FINGERS) {
+                finger_down[f] = 1;
+                finger_in_slop[f] = (apkenv_touch_slop_px > 0);
+                finger_down_x[f] = e.button.x;
+                finger_down_y[f] = e.button.y;
+            }
             module->input(module, ACTION_DOWN, e.button.x, e.button.y, f);
+            /* With Android touch delivery, leave the rest of the queue for
+             * the next frame: a DOWN, its MOVEs and the UP drained together
+             * (the frame rate dipped) mean the engine never ticks with the
+             * finger down. */
+            if (apkenv_touch_slop_px > 0) {
+                return 0;
+            }
         } else if (e.type == SDL_MOUSEBUTTONUP) {
             int f = e.button.which;
-            if (f >= 0 && f < WEBOS_MAX_FINGERS) finger_down[f] = 0;
-            module->input(module, ACTION_UP, e.button.x, e.button.y, f);
+            int x = e.button.x, y = e.button.y;
+            if (f >= 0 && f < WEBOS_MAX_FINGERS) {
+                finger_down[f] = 0;
+                if (finger_in_slop[f]) {
+                    x = finger_down_x[f];
+                    y = finger_down_y[f];
+                    finger_in_slop[f] = 0;
+                }
+            }
+            module->input(module, ACTION_UP, x, y, f);
         } else if (e.type == SDL_MOUSEMOTION) {
             int f = e.motion.which;
             /* Gate MOVE on the finger actually being down — SDL emits motion
              * with no button held, which otherwise corrupts the finger map. */
             if (f >= 0 && f < WEBOS_MAX_FINGERS && finger_down[f]) {
+                if (finger_in_slop[f]) {
+                    int dx = e.motion.x - finger_down_x[f];
+                    int dy = e.motion.y - finger_down_y[f];
+                    if (dx * dx + dy * dy < apkenv_touch_slop_px * apkenv_touch_slop_px) {
+                        continue;
+                    }
+                    finger_in_slop[f] = 0;
+                }
                 module->input(module, ACTION_MOVE, e.motion.x, e.motion.y, f);
             }
         } else if (e.type == SDL_QUIT) {

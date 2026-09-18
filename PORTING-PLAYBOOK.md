@@ -436,6 +436,13 @@ TouchPad — and the remaining work went straight back to being ordinary Java-co
 - [ ] Synthetic input (`APKENV_MORTAR_AUTOTAP`-style) + `tools/grab.sh` so the port can be driven
       through menus and gameplay without waiting on a person.
 - [ ] One change per device test; results recorded in `plan/`.
+- [ ] **Audit the generic fake-JNI stubs** your engine reaches — the static `Call*ObjectMethod`
+      forms return NULL without asking the module; override them via `override_env`. Grep the
+      module for log-only handlers. (Cut the Rope, below.)
+- [ ] Engine GL on a **second thread**? It needs a real shared EGL context — our EGL wrappers are
+      no-op stubs. Touch: add slop and stop draining past a DOWN. Strings: `strings -e L` too.
+- [ ] Preference store: the whole API (long/float/delete/save), loud overflow, "unset" ≠ "false",
+      and first-run seeding the port may never reach.
 - [ ] **Unity?** Which host generation (`nativeSetInputCanceled` in the native table = Unity 4's
       order); add `plan/<game>-mono-imports.txt` and regenerate `compat/mono_symbols.h`; IL-scan the
       managed DLLs for the `AndroidJavaObject`/`AndroidJavaClass` calls the reflection bridge must
@@ -695,3 +702,193 @@ object is newer than the source.
 
 **Drive the first-run dialogs synthetically.** `APKENV_COCOS_AUTOTAP` tapped "NO" on the push
 notification prompt at frame 400, which got runs past it into the tutorial without a person.
+
+---
+
+## Lessons from Cut the Rope HD (ZeptoLab), a community port, 2026-09-16
+
+Another developer used this toolkit to port **Cut the Rope HD 2.5.3** (`com.zeptolab.ctr.hd`) to the
+TouchPad. It took six weeks and it shipped playable. The engine is a 2.9 MB C++ `libctr-jni.so`
+with a thin Java host (`CtrPreferences`, `CtrSoundManager`, `CtrResourceLoader`, `CtrVideoPlayer`,
+`FontGenerator`, `CtrBillingManager`), GLES1, and `SoundPool`/`MediaPlayer` audio. Their module and
+shim fixes live in their fork, not here. The points below are the ones this playbook did not
+already have. Four were **bugs in our tree too**. Each one is now fixed behind an opt-in that a new
+module calls from `try_init`, so shipped ports keep their exact path (marked **[fixed: opt-in]**;
+the calls are listed together in `apkenv.h`). None has been exercised on a device yet: the first new
+module to turn one on is its test.
+
+**Their headline number: of ~15 real bugs, 13 were in the shim, one was in webOS's SDL, and none
+were in the game.** They spent days disassembling the engine for three bugs (a tutorial glitch,
+dead end-of-level buttons, a boot crash). All three turned out to be our own stubs or data
+structures. They also shipped six ARM patches to the engine's `.so`, and all six were band-aids over
+one missing JNI return value. The final package carries the pristine apk. *A fix that works shows
+you found the mechanism, not the cause. If you are patching engine code to stop a null
+dereference, the null is probably coming from you.* §0 already says this; here it is with numbers.
+
+**Fake-JNI gaps.**
+- **[fixed: opt-in `apkenv_jni_unanswered_enable()`]** `JNIEnv_CallStaticObjectMethod`/`…V`/`…A`
+  in `jni/jnienv.c` `return NULL` unconditionally. They never consult the module, unlike the instance variants. Cut the Rope called
+  the static `getPhoneModel()` from a background thread and dereferenced the result: a boot crash
+  that took four sessions. `override_env` is a slot-wise merge over the whole `JNINativeInterface`,
+  so a module can override any of these stubs without touching shared code. **Audit the generic
+  stubs that return NULL/0 for the ones your engine reaches**, the static `Call*` forms especially.
+  With the opt-in, all 90 generic `Call*Method*` fallbacks print `[JNI-UNANSWERED] <fn>
+  class.method(sig)` once each (then at 100/10k/1M calls) in every build, and a `String`-returning
+  call gets `""` instead of NULL or the sentinel. That is a crash guard, not an answer: the log
+  line tells you which method to implement.
+- **The same question on two paths.** The engine asked for the locale through both an instance
+  call and a static call. The module answered the instance one `"en"` and the static one NULL.
+  That caused a tutorial rendering bug that survived ~28 investigation items. When a bug survives a
+  long hunt, check whether the engine asks the same thing somewhere you never implemented.
+- **Answer with what is true for your port, not with a plausible value.** `FontGenerator.
+  registerLetters(String)` returns an `int[]` of *distinct* atlas bitmaps it touched, terminated by
+  `-1`. One zeroed entry per character claimed "bitmap 0 changed", so the engine looked up a
+  texture the port never makes and crashed. A port with no rasterizer should answer the empty set,
+  `{-1}`.
+- **Log-only handlers read as implemented in every audit.** `stopSound` printed its arguments and
+  did nothing, and `stopAllSounds` was `{}`. Nothing showed until a looping sound never stopped.
+  **Grep your module for handlers whose whole body is a printf.** Also read the semantics:
+  `stopSound(id, count)` stops `count` live streams oldest-first, and `10000` means "all".
+- **A "not available" answer can hang the UI.** `CtrBillingManager.available()` returning 0 looked
+  safe, but the engine shows its modal *first* and relies on the restore flow to close it. With
+  `available()` = 0 nothing closed it, and the modal ate all touch. The fix: answer 1 (as real
+  Android would) and fire the engine's own `transactionsRestored()` callback right away. *Make sure
+  something completes every flow you admit you can start.*
+
+**The preference store behind the stub can be the bug.** A flat store capped at 1024 keys silently
+dropped every write after the ~2190 keys this game seeds at boot. A "first time" flag therefore
+never stuck, and every tap on "Next" re-entered the first-run path. That showed up as *"the
+end-of-level buttons don't work"* and sent two sessions into touch-dispatch disassembly. Once the
+cap was raised, the linear lookup cost **11 M `strcmp`s in one frame** (a 1974 ms stall), which is
+now a hash index. Other gaps: `getLongForKey` was a stub called 17,992 times per boot, float and
+delete calls were dropped, and `savePreferences()` was unwired, so a crash lost the whole session.
+**Implement the whole preference API. Make overflow fail loudly. Have the getter tell "unset" apart
+from "false".** In that game, `MUSIC_ON`/`SOUND_ON` are seeded during first-run init, which the port
+never reached, so the game ran correctly and silently. A `found=0` trace line cracked it.
+
+**A background GL thread needs a real context. [fixed: opt-in `apkenv_egl_shared_contexts_enable()`]**
+`my_eglCreateContext`/`my_eglMakeCurrent` (`compat/egl_wrappers.c`) are no-op stubs. The engine streams menu textures from
+a worker thread, and every GL call on that thread silently did nothing. The telltale sign is
+**`glGetError()` == `GL_NO_ERROR` while a paired `glGetIntegerv` never writes its output**. That
+means "no current context", not "an error". Two things failed: marshalling the worker's calls to
+the main thread (asynchronously it broke upload/draw lockstep; synchronously it made loading 5x
+slower). What worked was a **real `eglCreateContext` sharing the main context**, plus a 4x4 pbuffer
+and `eglMakeCurrent` on the worker, using the display/config/context captured from SDL's own EGL
+calls. **This works on webOS.** It contradicts the "webOS forbids raw EGL" caution in
+`plan/STAGE-5-generalize.md`. (It was tried on WMW2 on 2026-09-18 and had nothing to act on: WMW2
+creates no GL worker, and its old "multi-threaded GL" diagnosis turned out to be wrong.) Our version: `system_init` captures SDL's display, config and context right after platform
+init (`[EGLSHARE] platform context … captured`). The engine's `eglCreateContext` then creates a real
+context sharing it, and `eglMakeCurrent` *off the main thread* binds that context over a 4x4
+pbuffer, falling back to surfaceless. On the main thread `eglMakeCurrent` stays a stub, so SDL's
+context is never displaced. If the engine does GL on a worker without calling EGL (because the Java
+host made the context current), call `apkenv_egl_ensure_thread_context()` from the module on that
+thread.
+
+**Audio on webOS's SDL_mixer.**
+- It resamples **neither rate nor channel count for chunks either**, not just music. Open the mixer
+  once and transcode every asset (sounds, music, cutscene audio) to that exact format.
+- `Mix_LoadMUS_RW` (buffer-based) crashes through a null function pointer. Extract music to a real
+  file and use `Mix_LoadMUS(path)`.
+- **webOS's own `libSDL` has a NEON bug.** `SDL_MixAudio_ARM_NEON_S16LSB` assumes the source and
+  destination share 4-byte alignment. On a mono mixer, a *looping* chunk whose length is 2 mod 4
+  mixes at a misaligned offset, and the app dies with **SIGILL** (signal 4, not 11) with the pc in
+  `/usr/lib/libSDL-1.2.so.0`. The fix, in the shared loader: pad every chunk's `alen` up to a
+  multiple of 4 with silence. The device's libSDL is **not stripped**, so `novacom get` it and
+  `nm -n` names the crashing frame.
+- **[fixed: opt-in `apkenv_mixer_exact_stop_enable()`]** `sdl_mixer_stop_sound` (`platform/common/sdl_mixer_impl.h`) calls
+  `Mix_HaltChannel(sound->channel)` and then sets `channel = -1`. A second stop is
+  `Mix_HaltChannel(-1)`, which halts **every** channel. A never-played (calloc'd) sound halts
+  channel 0. The fix (theirs, and now ours) halts only channels where `Mix_GetChunk(i) ==
+  sound->chunk && Mix_Playing(i)`. The NEON padding above is **not** in our tree yet.
+
+**Input. [fixed: opt-in `apkenv_touch_android_enable(px)`, `px <= 0` means 12]**
+- **Implement Android's touch slop.** The TouchPad digitizer jitters by 2–3 px, and
+  `platform/webos.c` forwards every jitter as `ACTION_MOVE`. Cut the Rope's tap-vs-drag test treats
+  any movement as a drag. Of 13 taps on one button, only the one with zero movement worked. A 12 px
+  deadzone from the DOWN point (Android is about 8 dp) fixed the menus. Android's gesture layer
+  absorbs this before an app sees it, so the shim has to do it.
+- **Don't drain the whole SDL queue before the engine ticks.** When the frame rate dips, DOWN, the
+  MOVEs and UP can all arrive in one drain, and the engine never sees "touch is down" for a frame.
+  Return after forwarding a DOWN. The same opt-in does this, and it reports a finger's UP at its
+  DOWN point while the finger is still inside the slop circle, so the engine sees a clean tap.
+
+**Video.** The PDK has no video API. They transcode each clip at package time into
+`video/<clip>/%04d.jpg` plus an `.ogg` at the mixer's format. A decoder thread fills a 4-frame
+ring, each frame goes through `glTexSubImage2D` into a POT texture drawn as one quad, and a tap
+skips. **stb_image decodes a 432x720 JPEG in 37.4 ms on the TouchPad**, so the pipeline runs at
+15 fps. Note the contract: `CtrVideoPlayer.playVideo` calls `nativePlaybackFinished` *synchronously,
+before playback starts*, and Java then freezes the engine until the clip ends. A stub that
+"finishes" immediately is correct but skips the cartoon. That produced a **phantom bug**: "a fresh
+install drops straight into level 1." It was the game's real first-run flow without the intro.
+*Before treating "fresh install behaves differently" as a state bug, diff a fresh boot's trace
+against a warm one and find the first divergence.*
+
+**Text.** The port has no glyph rasterizer, so credits are blank and non-English languages are
+disabled. To disable a language in `assets/menu_strings.xml`, you have to strip the non-English
+child tags as well as the `locales=` attribute, or the XML parser crashes. The FreeType path in
+`modules/cocos2dx.c` (§Tiny Death Star) is the template for fixing that properly.
+
+**Saves.** The data dir `/media/internal/.apkenv/<APK FILENAME>/` is keyed by the **apk filename,
+not the app id**. Rename the bundled apk and the game looks factory-reset while the save sits
+untouched under the old name. Saves survive uninstall because that tree is on a different
+filesystem and because ipkg deletes only the files listed in the package's `.list`.
+
+**Debugging tools that paid off.**
+- **`strings -e L`**: this engine stores ~2200 preference keys and its `__PRETTY_FUNCTION__`
+  strings as UCS-4 (`char32_t`). Plain `strings` misses them, and two investigations wrongly
+  "proved" keys were absent. If a string you are sure exists is missing, check the encoding.
+- **jadx** (`jadx -d out game.apk`) gives greppable Java for listing every `native` declaration,
+  and **androguard** is quick for looking up one method. For **Ghidra 12**, headless Jython
+  scripting is gone: use `pip install pyghidra` with JDK 21+. Ghidra `Address` objects already
+  include the image base, and a reused project keeps earlier analysis mistakes.
+- **Read `tid-first=` in apkenv's crash dump** (`debug/debug.c`). `1` means this thread crashed
+  first. `0` means another thread already crashed and this is shutdown fallout. Eleven items across
+  four sessions chased a static destructor running during the teardown that a different crash had
+  started. Their handler also prints registers that point at UTF-16 strings, and probes each pointer
+  by `write()`ing it to a pipe, so a bad address returns `EFAULT` instead of faulting again.
+- **Live-gdb breakpoints on hot functions hang or crash the app** on this device/gdbserver pair
+  (confirmed for touch and for `pthread_{get,set}specific` PLT stubs). Log in-process instead, gated
+  by a file. Get the engine's load base as *a resolved function pointer minus its known file offset*.
+- **File-gated tracing for icon launches.** An icon launch takes no environment, and it is the only
+  launch path with input. Gates that also honour a file (`/media/internal/apkenv_<tier>_enable`)
+  toggle tracing without repackaging. Tier the traces: a full boot log was 639 KB, while an
+  audio-only tier caught a whole play session in 53 KB at full speed. Keep hot traffic (preferences)
+  out of the cheap tiers.
+- **RTTI from a vtable:** `[vtable-4]` is the typeinfo, and `[typeinfo+4]` is the class name. Watch
+  the `.data.rel.ro` file-offset correction. Scanning backwards from a vtable for RTTI is too noisy
+  to trust.
+- **Easy ways to invalidate a session:** return addresses carry the Thumb bit (`| 1`). Tail calls
+  are `b`/`b.w`, not `bl`. A function with no xrefs can be a static destructor reached through
+  `.fini_array`. Diagnostics printed with `%.2f` rounded a real 0.004167 to "0.00" and caused two
+  fixes for a bug that never existed. A probe with an `n<8` print cap reported "only 8 uploads" when
+  there were ~85.
+
+**Device and packaging mechanics** (on top of §5):
+- A local `timeout` around `novacom run` kills only the local client. **The remote process keeps
+  running**, so a "failed" scripted run still happened. Use unique log names per run, and do the
+  launch and the log pull in one script.
+- Don't `novacom get` a multi-MB log (it times out). `grep`/`sed` it on the device. There is no
+  `head` on the device, but `tail`, `grep`, `sed` and `wc` exist.
+- **The device degrades after many launch cycles** (novacom sessions wedge, and the app hangs in
+  init). Reboot before any A/B test you intend to trust.
+- **webOS silently refuses a version downgrade.** `palm-install` reports success and changes
+  nothing. `cat` the on-device `appinfo.json`. Reinstalling the same version needs `-r` first.
+- A real icon launch runs as uid 5003 in `/var/palm/jail/<appid>/`, with
+  `LD_PRELOAD=libpvrtc.so` and capabilities stripped, so even root cannot ptrace it. `novacom run`
+  is not equivalent. When in doubt, ask the person holding the device to tap the icon.
+- Filesystem facts: `/media/cryptofs` (where apps install) writes ~2.5x slower than
+  `/media/internal` (16.6 vs 41.9 MB/s). `/tmp` (40 MB) and `/var/tmp` (32 MB) are too small to
+  stage a large `.ipk`. `novacom put` runs at about 5 MB/s.
+- Patching an apk: entries are DEFLATE'd, so byte-offset patching of the zip does not work. Rebuild
+  it and keep each entry's `compress_type`. Keep only one apk in the packaging tree.
+
+**Process.** An identical pc and registers across runs means the crash is deterministic and worth
+a controlled A/B; varying addresses mean a family of bugs. Keep fixes that are correct but not
+causal, and label them in the trail as having fixed nothing visible. The device is shared: before
+believing a crash report, check whether the log ends with `SDL_QUIT` and a clean teardown (someone's
+`killall`) or with a fault.
+
+**Triage correction.** Our catalog ruled out Cut the Rope as "7 MB dex, Dalvik-heavy". That was
+wrong. Our `cut-the-rope_2.3.apk` (`com.zeptolab.ctr.ads`) carries a native
+`lib/armeabi/libctr-jni.so` next to the big dex. **Dex size is not
+evidence that the logic is in Java. Check `lib/` before ruling a game out.**

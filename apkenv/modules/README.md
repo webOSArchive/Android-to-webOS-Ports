@@ -47,6 +47,13 @@ static int mygame_try_init(struct SupportModule *self) {
     self->priv->JNI_OnLoad_game = LOOKUP_LIBM("libgame", "JNI_OnLoad");
     /* Override fake-JNI entries the engine calls back through, e.g.
      * self->override_env.CallObjectMethodV = mygame_CallObjectMethodV; */
+    /* Opt-in shim fixes (apkenv.h) - off for shipped ports, on for new ones:
+     *   apkenv_jni_unanswered_enable();      log unanswered Call*Method calls
+     *   apkenv_touch_android_enable(0);      touch slop + one DOWN per drain
+     *   apkenv_mixer_exact_stop_enable();    stop_sound stops only that sound
+     *   apkenv_egl_shared_contexts_enable(); only if the engine does GL on a
+     *                                        second thread
+     * Only enable once the module has claimed the apk (return 1 below). */
     return self->priv->nativeInit != NULL && self->priv->nativeRender != NULL;
 }
 

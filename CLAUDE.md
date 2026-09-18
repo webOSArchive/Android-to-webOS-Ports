@@ -22,19 +22,27 @@ This folder is a workspace for running **Android NDK games** natively on **webOS
   see *Moving to another machine* below to restore it.
 
 ## Resume here (as of 2026-09-17)
-Nine games shipped (see the README status table); the project is paused, nothing is in flight.
+Nine games shipped from this repo, plus Cut the Rope HD ported by another developer on this toolkit (see the README status table); the project is paused, nothing is in flight.
 - **Last session:** RoboCop 1.0.0 released and committed (`plan/ROBOCOP.md`). The README status
   section was rewritten and a repo audit (IP / cruft / onboarding) was run the same day.
 - **Open threads, none urgent:**
-  - Where's My Water? 2 stalls on multi-threaded GL loading (`plan/STAGE-5-generalize.md` pt4).
+  - Where's My Water? 2 loads its level and then renders black (re-run 2026-09-18; the old
+    multi-threaded-GL diagnosis does not hold — `plan/STAGE-5-generalize.md`, last entry).
   - Aralon's outdoor lighting is slightly less warm than on a Mali tablet — parked by the user.
+  - Cut the Rope HD was ported by another developer (2026-09-16). Their lessons are in
+    `PORTING-PLAYBOOK.md`. Four shim bugs they hit are fixed here as **opt-ins for new modules**
+    (2026-09-18, listed in `apkenv.h`; built but never run on a device): `apkenv_jni_unanswered_enable`,
+    `apkenv_touch_android_enable`, `apkenv_mixer_exact_stop_enable`,
+    `apkenv_egl_shared_contexts_enable`. The last one (a real shared EGL context for engine GL
+    threads) was tried on WMW2 on 2026-09-18 and had nothing to act on: WMW2 makes no GL worker.
+    Their NEON chunk-padding fix is not ported.
   - Temple Run 2 / Aralon have not been re-run on a binary with the Unity 4.2 changes. Their shipped
     `.ipk`s carry their own binaries, so this only matters if one is repackaged; the new paths are
     gated off for them. Do one launch test if that happens.
 - **Candidates in `android-candidates/` not yet attempted** (verdicts in
   `plan/memory/android-apk-port-triage.md`): **Fruit Ninja 2.1.2** (✅ triaged, Mortar + OBB — the
   most promising), **Bejeweled Blitz** (native SexyApp, OpenSL-only — the OpenSL sink from Tiny Death
-  Star now exists), Temple Run 1.6.1 (Unity). Ruled out: Cut the Rope, Flappy Bird, both Space Cats
+  Star now exists), Temple Run 1.6.1 (Unity). Ruled out: Flappy Bird, both Space Cats
   (Dalvik/Java), PvZ 2 and PvZ free (freemium, online assets).
 - **Method for the next game:** `PORTING-PLAYBOOK.md`, then `apkenv/modules/README.md` (module
   skeleton, the hand-kept `SOURCES` list in `build-webos.sh`, engine → module table) and
@@ -186,7 +194,7 @@ When memory changes in a session, re-export it into `plan/memory/` before commit
 
 ## Where's My Water? (first port)
 - **Playable end-to-end with audio**, ships as `com.apkenv.wheresmywater` `.ipk` (launcher icon). Portrait via render-to-FBO; FMOD audio pump. Full writeup: `android-port-shim.md`, `apkenv/BUILD-STATE.md`, `plan/STAGE-*.md`.
-- WMW2 (same engine family) reached the level but stalls on multi-threaded GL loading — see `plan/STAGE-5-generalize.md` pt4 (open).
+- WMW2 (same engine family) loads the level, then renders black — see the 2026-09-18 entry in `plan/STAGE-5-generalize.md` (open). The earlier multi-threaded-GL diagnosis (pt4) does not hold.
 
 ## Conventions
 - Temp/scratch work goes in the session scratchpad, **never** this folder.

@@ -33,6 +33,14 @@
 struct Mixer *
 g_mixer = 0;
 
+int apkenv_mixer_exact_stop = 0;
+
+void
+apkenv_mixer_exact_stop_enable(void)
+{
+    apkenv_mixer_exact_stop = 1;
+}
+
 void apkenv_mixer_register(struct Mixer *mixer)
 {
     g_mixer = mixer;

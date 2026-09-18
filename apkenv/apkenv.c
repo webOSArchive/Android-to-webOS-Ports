@@ -464,6 +464,9 @@ system_init(int gles_version)
         return 0;
     }
 
+    /* No-op unless the module called apkenv_egl_shared_contexts_enable(). */
+    apkenv_egl_capture_main_context();
+
 #if defined(APKENV_GLES)
     gles1_init();
 #endif
@@ -580,6 +583,16 @@ get_config(char *name)
     }
 
     return 0;
+}
+
+int apkenv_touch_slop_px = 0;
+
+void
+apkenv_touch_android_enable(int slop_px)
+{
+    apkenv_touch_slop_px = (slop_px > 0) ? slop_px : 12;
+    fprintf(stderr, "[TOUCH] Android touch delivery: slop %d px, one DOWN per drain\n",
+            apkenv_touch_slop_px);
 }
 
 int

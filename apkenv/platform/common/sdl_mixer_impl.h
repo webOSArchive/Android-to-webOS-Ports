@@ -169,6 +169,20 @@ sdl_mixer_stop_music(struct Mixer *mixer, struct MixerMusic *music)
 void
 sdl_mixer_stop_sound(struct Mixer *mixer, struct MixerSound *sound)
 {
+    if (apkenv_mixer_exact_stop) {
+        /* Halt only the channels actually playing THIS chunk. The path
+         * below halts sound->channel, which is 0 for a sound never played
+         * (calloc) and -1 after a first stop - and Mix_HaltChannel(-1)
+         * halts EVERY channel. Opt-in: apkenv_mixer_exact_stop_enable(). */
+        int i, n = Mix_AllocateChannels(-1);
+        for (i = 0; i < n; i++) {
+            if (Mix_Playing(i) && Mix_GetChunk(i) == sound->chunk) {
+                Mix_HaltChannel(i);
+            }
+        }
+        sound->channel = -1;
+        return;
+    }
     Mix_HaltChannel(sound->channel);
     sound->channel = -1; // world of goo module needs this
 }

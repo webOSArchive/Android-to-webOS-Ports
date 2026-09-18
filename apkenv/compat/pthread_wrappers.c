@@ -30,6 +30,7 @@
  **/
 
 #include "pthread_wrappers.h"
+#include "../apkenv.h"
 #include <sys/time.h>
 #include <errno.h>
 
@@ -208,14 +209,23 @@ pthread_rwlock_t* apkenv_alloc_init_rwlock(void)
 
 /* Diagnostic wrapper: log the engine thread's lifecycle so we can see whether a
  * worker thread (e.g. WMW2's level loader) runs to completion, hangs, or dies. */
-struct apkenv_thread_log { void *(*fn)(void*); void *arg; };
+struct apkenv_thread_log { void *(*fn)(void*); void *arg; int gl; };
 static void *apkenv_thread_trampoline(void *p)
 {
     struct apkenv_thread_log *t = p;
-    void *(*fn)(void*) = t->fn; void *arg = t->arg; free(t);
+    void *(*fn)(void*) = t->fn; void *arg = t->arg; int gl = t->gl; free(t);
     fprintf(stderr, "[PTHREAD] >>> start ktid=%ld tid=%lu routine=%p\n", (long)syscall(224),
             (unsigned long)pthread_self(), (void*)fn);
+    /* apkenv_egl_engine_thread_contexts_enable(): this thread runs code from
+     * the named engine library, so give it a GL context of its own, sharing the
+     * platform's, as a second Android GL thread would have. */
+    if (gl) {
+        apkenv_egl_ensure_thread_context();
+    }
     void *r = fn(arg);
+    if (gl) {
+        apkenv_egl_release_thread_context();
+    }
     fprintf(stderr, "[PTHREAD] <<< end   tid=%lu routine=%p ret=%p\n",
             (unsigned long)pthread_self(), (void*)fn, r);
     return r;
@@ -231,6 +241,7 @@ int apkenv_my_pthread_create(pthread_t *thread, const pthread_attr_t *__attr,
     printf("pthread_create(thread=%p, attr=%p, start_routine=%p, arg=%p)\n",thread, __attr, start_routine, arg);
     struct apkenv_thread_log *t = malloc(sizeof(*t));
     t->fn = start_routine; t->arg = arg;
+    t->gl = apkenv_egl_thread_wants_context((void *)start_routine);
     return pthread_create(thread, realattr, apkenv_thread_trampoline, t);
 }
 

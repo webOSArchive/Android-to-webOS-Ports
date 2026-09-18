@@ -101,6 +101,10 @@ void apkenv_mixer_play_music(struct MixerMusic *music, int do_loop);
 void apkenv_mixer_play_sound(struct MixerSound *sound, int do_loop);
 void apkenv_mixer_stop_music(struct MixerMusic *music);
 void apkenv_mixer_stop_sound(struct MixerSound *sound);
+/* Opt-in: stop_sound halts only the channels playing that sound, instead of
+ * sound->channel (which can be -1 = all channels). Off for shipped ports. */
+extern int apkenv_mixer_exact_stop;
+void apkenv_mixer_exact_stop_enable(void);
 int apkenv_mixer_get_sound_channel(struct MixerSound *sound);
 void apkenv_mixer_set_sound_channel(struct MixerSound *sound, int channel);
 void apkenv_mixer_volume_music(struct MixerMusic *music, float volume);

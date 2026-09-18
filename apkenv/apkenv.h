@@ -278,6 +278,33 @@ extern void *apkenv_base_of_stack;
  * No-op unless module_hacks->render_to_fbo is set. */
 void apkenv_fbo_present(void);
 
+/* Opt-in shim fixes for NEW ports (found by another developer's Cut the Rope HD
+ * port; PORTING-PLAYBOOK.md). Each is off by default so shipped ports keep
+ * their exact behaviour; call the ones you want from the module's try_init.
+ *   apkenv_jni_unanswered_enable()   jni/jnienv.c: log generic Call*Method
+ *       fallbacks once each ([JNI-UNANSWERED]); String calls get "" not NULL.
+ *   apkenv_touch_android_enable(px)  platform/webos.c: Android touch slop
+ *       (MOVEs within px of the DOWN are dropped; <=0 means 12) and the input
+ *       drain stops after a DOWN so the engine sees it for a frame.
+ *   apkenv_egl_shared_contexts_enable()  compat/egl_wrappers.c: the engine's
+ *       eglCreateContext/eglMakeCurrent get REAL contexts sharing SDL's, so
+ *       GL on a second thread works; apkenv_egl_ensure_thread_context() binds
+ *       one on the calling thread for engines that never call EGL themselves.
+ *   apkenv_mixer_exact_stop_enable() mixer/mixer.h: stop_sound halts only
+ *       the channels playing that sound (not all of them). */
+void apkenv_jni_unanswered_enable(void);
+void apkenv_touch_android_enable(int slop_px);
+extern int apkenv_touch_slop_px;   /* 0 = off */
+void apkenv_egl_shared_contexts_enable(void);
+int apkenv_egl_ensure_thread_context(void);
+void apkenv_egl_capture_main_context(void);
+/* As shared contexts, plus: each thread whose start routine is in the library
+ * whose name contains `libname` gets one bound at start and freed at exit -
+ * for engines that do GL on a worker without calling EGL (WMW2). */
+void apkenv_egl_engine_thread_contexts_enable(const char *libname);
+int apkenv_egl_thread_wants_context(void *start_routine);
+void apkenv_egl_release_thread_context(void);
+
 /* apkenv configuration helper */
 char *get_config(char *name);
 int get_config_int(char *name, int fallback);

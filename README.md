@@ -7,7 +7,7 @@ linker loaded as a library** + a **fake-JNI** layer + a **webOS SDL/PDL backend*
 + a small **per-game module**. The game's own native engine `.so` is loaded and
 driven directly through its JNI entry points; there is no Java VM.
 
-> **Nine games run this way today** — from Where's My Water? (the first port) to
+> **Ten games run this way today** — from Where's My Water? (the first port) to
 > Unity 4.2 shooters like RoboCop — each installed as a **one-tap webOS `.ipk`**
 > that launches from the launcher, with touch and sound, on real hardware. See
 > [Status](#status).
@@ -189,8 +189,9 @@ built for webOS.
 
 ## Status
 
-Nine games ship as one-tap `.ipk`s, each launching from the webOS launcher icon
-with touch and sound. The **module** column is where to start when your game uses
+Ten games ship as one-tap `.ipk`s, each launching from the webOS launcher icon
+with touch and sound. Nine were ported in this repo; Cut the Rope HD was ported
+by another developer using this toolkit, and its module lives in their fork. The **module** column is where to start when your game uses
 the same engine.
 
 | Game | Engine | Module | State |
@@ -204,10 +205,12 @@ the same engine.
 | **Dead Space** | EA BLAST | `eablast.c` | ✅ menus, cutscenes, gameplay, audio (3:2 letterbox) |
 | **Star Wars: Tiny Death Star** | Cocos2d-x 2.0 | `cocos2dx.c` | ✅ portrait, touch, text, FMOD music + SFX |
 | **RoboCop** | Unity 4.2 + Mono | `unity.c` | ✅ tutorial, aiming, missions, SFX, music, 30 fps |
-| Where's My Water? 2 | same as WMW | `wheresmywater2.c` | ☐ reaches the level, stalls on multi-threaded GL loading |
+| **Cut the Rope HD** *(community port)* | ZeptoLab native, GLES1 | `cuttherope.c` (their fork) | ✅ playable, audio, intro cartoon; no dynamic text (credits, non-English) |
+| Where's My Water? 2 | same as WMW | `wheresmywater2.c` | ☐ loads the level, then renders black (not GL threading; `plan/STAGE-5-generalize.md`, 2026-09-18) |
 
 Per-game trails — what broke, how it was found, and the fix — are in `plan/`
-(e.g. `plan/ROBOCOP.md`, `plan/FRUITNINJA.md`, `plan/DEAD-SPACE.md`). Each
+(e.g. `plan/ROBOCOP.md`, `plan/FRUITNINJA.md`, `plan/DEAD-SPACE.md`); the Cut the Rope
+lessons are folded into `PORTING-PLAYBOOK.md`. Each
 packaged game's launch settings are a small `apkenv/packaging/<game>/apkenv.env`.
 
 Capabilities the framework now has, general rather than per-game (new

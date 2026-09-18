@@ -90,7 +90,9 @@ concluding dispatch is broken.* See [[trust-operator-diagnosis]].
 **Other retired conclusions:** WMW's early crash was **not** file I/O — it was `std::string(NULL)`
 throwing inside a statically-linked libstdc++, unwinding past the scene setup (fixed by a
 1-instruction patch **baked into the apk**). The "no root element in XML" lead was benign (WMW
-*Lite* genuinely lacks those files). WMW2's level-load stall was **not** memory (412 MB free). The
+*Lite* genuinely lacks those files). WMW2's level-load stall was **not** memory (412 MB free), and **not multi-threaded GL** either
+(2026-09-18: the level loads, no libwalaber thread exists, the "loader" was FMOD's thread; what remains
+is a black render after loading — `plan/STAGE-5-generalize.md`). The
 water-orientation bug is fixed — render-to-portrait-FBO made world, UI and fluid agree.
 
 ## Live facts still worth having
