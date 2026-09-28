@@ -159,6 +159,7 @@ When memory changes in a session, re-export it into `plan/memory/` before commit
   `/media/internal/.apkenv/grab` over novacom, the render loop consumes it within ~0.5 s and writes
   the next frame, and the script saves a PNG under `apkenv/packaging/out/screenshots/` (gitignored).
   Always on in binaries built since 2026-09-14; shipped packages older than that lack it. Before 2026-09-16 the device scripts hung when run from an interactive terminal (fixed: `timeout --foreground`, stdin at /dev/null).
+  **For SDK apps, the launcher or anything with no GL layer: `apkenv/tools/sysgrab.sh [<name>]`** (2026-09-28) asks LunaSysMgr's `takeScreenShot` over the private bus and needs nothing running on the device; same output dir.
 - **Amazing Alex HD (Rovio ka3d) — ported in ONE PASS (2026-08-26)** via the playbook: booted, music,
   playable on the first device launch; `apkenv/packaging/out/com.apkenv.amazingalex_1.0.0_all.ipk`.
   Trail: `plan/AMAZING-ALEX.md`. Module: `apkenv/modules/angrybirds.c` (now in the webOS build).
