@@ -41,6 +41,25 @@ See [[templerun2-port-analysis]] for the worked example numbers.
   Rope HD 2.5.3** to the TouchPad on this toolkit (shipped playable 2026-09-16; their fork, lessons in `PORTING-PLAYBOOK.md`).
   **Lesson: dex size is not evidence the logic is in Java — always check `lib/` first.**
 - ❌ **FlappyBird** (AndEngine, all-Java) — logic in Dalvik, not native. Skip.
+- ❌ **SimCity Metropolis v1.0** (`ca.jamdat.flight.simcitymetropolis`, 2026-09-18 triage) — **all Java**: 737 KB apk,
+  no `lib/`, a 231 KB dex drawing with `android.graphics.Canvas` (JamDat "flight" J2ME-era port) + `assets/gamelib.*`
+  data. Nothing native to load. Out of scope, like Space Cat.
+- ❌ **Sonic Unleashed 1.1.7** (`com.gameloft.android.GAND.GloftSOUN`, 320x480, sdkVersion 3, 2026-09-18) — **all Java**:
+  1.2 MB apk, no `lib/`, 299 KB dex drawing with `android.graphics.Canvas` (Gameloft J2ME-style port). Out of scope.
+  All-Java titles like this, SimCity Metropolis and Flappy Bird are ACL's job (a real Dalvik runs them unmodified on
+  the TouchPad), not apkenv's.
+- ⚠️ **Crossy Road 1.3.7** (`com.yodo1.crossyroad`, 2026-09-18 triage, static only) — **Unity 5.1.3p3 + Mono**
+  (libunity/libmono/libmain, armeabi-v7a NEON, GLES2, `useObb` false, 65 MB `assets/bin/Data` incl.
+  `sharedassets0.assets.split*`). Feasible but the **biggest Unity jump yet**: (1) a new host-Mono profile
+  (`build-mono-webos.sh` knows only unity3.5/unity4.2); (2) **Unity 5 owns EGL natively** — libunity imports the
+  full EGL set (CreateContext/WindowSurface/MakeCurrent/SwapBuffers/SwapInterval/GetConfigAttrib...) plus
+  `ANativeWindow_fromSurface/_getWidth/_setBuffersGeometry/_lock...`, and apkenv has **no ANativeWindow** and
+  stub EGL (`eglChooseConfig` does not even write a config) → needs a pass-through-to-SDL "virtual EGL" layer;
+  (3) if the build enabled multithreaded rendering, Unity renders on its own thread → the untested EGL
+  shared-context opt-in gets its real test; (4) SDK noise via AndroidJavaObject (yodo1 wrapper activity, KTPlay,
+  Chartboost/Vungle, P31, Immersion haptics `libImmEndpointWarpJ`) — must fail like an offline device.
+  Plays offline on Android. Worth it only after cheaper candidates.
+
 - ✅⭐ **Dead Space** (`Dead-Space.apk`, 2026-09-14 triage, static only) — `com.eamobile.deadspace_full_azn` 1.2.0,
   **Amazon/Kindle-Fire build** (compatible-screens 400/160 = 1024x600). **EA "Blast" framework** (new family, no
   module). One `libDeadSpace.so` (6.7MB, armv5TE), NEEDED = libc/stdc++/m/log/**GLESv1_CM only** (manifest says
