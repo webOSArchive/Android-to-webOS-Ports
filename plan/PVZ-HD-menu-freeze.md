@@ -197,3 +197,48 @@ producing SFX (look for `[MARM-JNI] UNHANDLED` sound-related calls).
 - Sharing note: unlike the WMW package, this `.ipk` bundles the copyrighted apk + extracted
   resources. For public distribution, the WMW approach (runtime-only .ipk, user supplies the apk on
   /media/internal) is the safe form; the seeding/env machinery works either way.
+
+## 10. "Crashes at level 16" / fog level: memory-quota kill, plus a leak (2026-10-17, 1.0.2)
+- **Not a crash.** The device syslog shows LunaSysMgr's `MemoryMonitor: … exceeded its memory quota.
+  ProcMem = 430, restriction = 400, violation count = 1` every 5 s once the process passes the
+  appinfo `requiredMemory`, then `IpcServer::killProcess` the moment the app loses focus (home
+  button, a notification, a dashboard). The tester's log matches: `ACTIVEEVENT gain=0`, then nothing,
+  with no signal line. The level number was incidental: it's how long she'd been playing.
+- **The leak:** the SoundPlayer pump (`my_audio_mixer`) called `NewShortArray` on every audio
+  callback, and apkenv's fake JNI never frees (`DeleteLocalRef` and `Release*ArrayElements` do nothing),
+  so RSS rose ~9 MB/min even on an idle title screen. The fix keeps one array for the pump's lifetime.
+  The idle title now holds flat at 382 MB.
+- **The baseline is high anyway:** the game's embedded ICF sets `MemSize0=200000000`; libpvz `valloc`s
+  it (+0x418d4) and the game dirties all of it, so ~195 MB is resident from the start (Android would
+  carry the same). Title ~383 MB, menus ~405–418 MB peak, so `requiredMemory` 400 → **512**.
+- **Logging for testers** (`modules/marmalade.c`): `[MEM] t=<monotonic> <why> rss hwm quota vmsize |
+  sys free cached swapfree`, written every 120 swaps, every 15 within 10% of the quota, and on init,
+  pause, resume and every music change. `[SIGNAL]` lines are written for TERM/HUP/INT/QUIT/USR1/USR2/PIPE,
+  which are then passed on to SDL's handler or re-raised. The log is already unbuffered (`apkenv.c`).
+- **Also in 1.0.2:** music paths now arrive as `music/x.mp3` (relative to the runNative data dir),
+  which no longer resolved, so the shipped build was silent too. `audioPlay` now tries the data-dir
+  prefix. Framebuffer reads (`glCopyTex{,Sub}Image2D`, `glReadPixels`) get the letterbox offset like
+  `glViewport`/`glScissor`, for the new-plant card (black, half-filled). `[FBREAD]` logs the first calls.
+  **Confirmed** on the panel 2026-10-17: the user saw the card render correctly.
+- Package: `packaging/out/com.apkenv.pvzhd_1.0.2_all.ipk`, binary md5 `bcb98049`, installed on the dev
+  TouchPad; there were no quota violations at launch.
+
+## 11. Progress never saved: apkenv's strcasecmp (2026-10-19, 1.0.3)
+- **Symptom:** quit the game and all progress is gone. The tester's pad had no `userdata/` anywhere;
+  the game had never written a save.
+- **Cause:** `my_strcasecmp` (`compat/linux_wrappers.c`, bound for `strcasecmp`) stopped when
+  EITHER string ended and returned 0, so a prefix compared equal and `""` equalled everything.
+  The Marmalade loader resolves each path component case-insensitively (opendir → readdir →
+  `strcasecmp`, libpvz +0x3dac2). Its data root is `/media/internal/.apkenv/pvzhd.apk/` (trailing
+  slash), and the empty component after it "matched" the first entry, `_manifest.json`. Saves
+  resolved to `<root>/_manifest.json/userdata/users.dat` → ENOTDIR, silently. Device `strace -f -e
+  trace=file` showed 210 `mkdir(".../_manifest.json")` and 629 stats of it per launch.
+- **Fix:** `strcasecmp` now compares through the terminator, like libc (host-tested against glibc).
+  After it there were no `_manifest.json` hits, the engine created `fonts/` for the first time, and
+  `userdata/users.dat` + `user1.dat` were written. **Confirmed** on the dev pad: the user completed a
+  level, quit, relaunched, and it resumed.
+- **Still open:** the new-player name dialog is unusable (no on-screen keyboard; touch areas go dead,
+  the app had to be killed). Saving works without it.
+- Package: `packaging/out/com.apkenv.pvzhd_1.0.3_all.ipk`, binary md5 `cda6bd13` (same as tested).
+  Other shipped ports carry their own binaries and are unaffected until rebuilt; a rebuild picks up
+  the correct `strcasecmp`.

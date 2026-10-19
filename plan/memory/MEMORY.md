@@ -20,3 +20,5 @@
 - [Exit and lifecycle like Android](exit-and-lifecycle-like-android.md) — no second onPause, no C++ static destructors (_exit from an atexit registered in deinit); test pause/resume/quit with calculator launch + kill -15
 - [Test tools under a tty](test-tools-under-a-tty.md) — timeout+novacom hangs (SIGTTIN) in the user's terminal but not the agent shell; use timeout --foreground + </dev/null, test with script -qec
 - [Host runtime bypasses apkenv hooks](host-runtime-bypasses-apkenv-hooks.md) — host Mono I/O and dlopen are invisible to apkenv tracers (use device strace); an offline "slow internet" can be a missing local transport (Unity Java WWW)
+- [Quota kill + fake-JNI leaks](quota-kill-and-fake-jni-leaks.md) — a 'crash' with no signal = LunaSysMgr requiredMemory kill on focus loss (check /var/log/messages); fake JNI never frees, so per-frame NewXArray leaks
+- [libc wrappers are suspects](libc-wrappers-are-suspects.md) — apkenv's strcasecmp prefix-matched and lost every PvZ save; strace file ops, host-test wrappers against glibc, set DEVICE= with two pads

@@ -36,6 +36,8 @@
 #include <sys/mman.h>
 #include <errno.h>
 #include <limits.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "common.h"
 #include "../compat/gles_wrappers.h"
@@ -216,6 +218,108 @@ static pthread_mutex_t marm_touchq_lock = PTHREAD_MUTEX_INITIALIZER;
  * the engine stalls (app threads got suspended) and resumes them at the RIGHT
  * time, instead of a racy fixed-delay resume. */
 static volatile unsigned long marm_swap_count = 0;
+
+/* [MEM] memory trail for the log. LunaSysMgr's MemoryMonitor compares the
+ * process against appinfo.json `requiredMemory` ("ProcMem = 430, restriction =
+ * 400") and SIGKILLs a violator as soon as it loses focus — no signal reaches
+ * us, so the last [MEM] line before the log ends is the evidence. Logged every
+ * 120 swaps, every 15 once RSS is within 10% of the quota, and on pause,
+ * resume and every music change (scene/level loads). */
+static long marm_quota_mb = -1;     /* appinfo requiredMemory, 0 = unknown */
+static long marm_last_rss_kb = 0;
+
+static void marm_read_quota(void)
+{
+    char buf[4096];
+    size_t n;
+    FILE *f = fopen("appinfo.json", "r");   /* cwd is the app dir */
+    marm_quota_mb = 0;
+    if (!f) return;
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    char *q = strstr(buf, "\"requiredMemory\"");
+    if (q && (q = strchr(q, ':')))
+        marm_quota_mb = strtol(q + 1, NULL, 10);
+}
+
+static void marm_mem_log(const char *why)
+{
+    char line[128];
+    long vmsize = -1, vmrss = -1, vmhwm = -1, memfree = -1, cached = -1, swapfree = -1;
+    struct timespec ts;
+    FILE *f;
+    if (marm_quota_mb < 0) marm_read_quota();
+    f = fopen("/proc/self/status", "r");
+    if (f) {
+        while (fgets(line, sizeof(line), f)) {
+            sscanf(line, "VmSize: %ld kB", &vmsize);
+            sscanf(line, "VmHWM: %ld kB", &vmhwm);
+            sscanf(line, "VmRSS: %ld kB", &vmrss);
+        }
+        fclose(f);
+    }
+    f = fopen("/proc/meminfo", "r");
+    if (f) {
+        while (fgets(line, sizeof(line), f)) {
+            sscanf(line, "MemFree: %ld kB", &memfree);
+            sscanf(line, "Cached: %ld kB", &cached);
+            sscanf(line, "SwapFree: %ld kB", &swapfree);
+        }
+        fclose(f);
+    }
+    marm_last_rss_kb = vmrss;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    fprintf(stderr, "[MEM] t=%ld.%01ld %s swap=%lu rss=%ldM hwm=%ldM quota=%ldM vmsize=%ldM"
+            " | sys free=%ldM cached=%ldM swapfree=%ldM\n",
+            (long)ts.tv_sec, ts.tv_nsec / 100000000, why, marm_swap_count,
+            vmrss / 1024, vmhwm / 1024, marm_quota_mb, vmsize / 1024,
+            memfree / 1024, cached / 1024, swapfree / 1024);
+}
+
+static void marm_mem_heartbeat(void)
+{
+    int near = marm_quota_mb > 0 && marm_last_rss_kb / 1024 >= marm_quota_mb * 9 / 10;
+    if (marm_swap_count % (near ? 15 : 120) == 0)
+        marm_mem_log("tick");
+}
+
+/* LunaSysMgr may send a catchable signal before its SIGKILL, and SIGPIPE
+ * kills silently: leave one line for each (write(2) only — async-signal-safe),
+ * then hand the signal on to whoever had it (SDL's quit handler) or re-raise. */
+static struct sigaction marm_old_sig[NSIG];
+
+static void marm_term_handler(int sig)
+{
+    static const char hex[] = "0123456789";
+    char msg[] = "[SIGNAL] caught signal NN, passing it on\n";
+    char *p = strstr(msg, "NN");
+    p[0] = hex[(sig / 10) % 10];
+    p[1] = hex[sig % 10];
+    if (write(2, msg, sizeof(msg) - 1) < 0) { /* nothing to do */ }
+    struct sigaction *old = &marm_old_sig[sig];
+    if (!(old->sa_flags & SA_SIGINFO) && old->sa_handler != SIG_DFL && old->sa_handler != SIG_IGN) {
+        old->sa_handler(sig);
+        return;
+    }
+    if (old->sa_handler == SIG_IGN)
+        return;
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void marm_install_term_handlers(void)
+{
+    static const int sigs[] = { SIGTERM, SIGHUP, SIGINT, SIGQUIT, SIGUSR1, SIGUSR2, SIGPIPE };
+    unsigned i;
+    for (i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = marm_term_handler;
+        sigemptyset(&sa.sa_mask);
+        sigaction(sigs[i], &sa, &marm_old_sig[sigs[i]]);
+    }
+}
 static int marm_lb_on = 0, marm_lb_ox = 0, marm_lb_oy = 0;   /* letterbox offset */
 
 /* --- runOnOSTickNative servicing thread ------------------------------------
@@ -723,7 +827,16 @@ static void my_audio_mixer(void *udata, void *stream, int len)
     int frames = nshorts / sound_channels;
     int gen = frames * engine_channels;
     JNIEnv *env = ENV(marmalade_priv.global);
-    jshortArray array = (*env)->NewShortArray(env, gen);
+    /* One array for the life of the pump: apkenv's fake JNI never frees a
+     * NewShortArray (DeleteLocalRef is a no-op), and a fresh one per callback
+     * leaked ~90 KB/s — PvZ grew past its appinfo requiredMemory and webOS
+     * killed it on the next focus loss. Only a bigger callback reallocates. */
+    static jshortArray array = NULL;
+    static int array_len = 0;
+    if (array == NULL || gen > array_len) {
+        array = (*env)->NewShortArray(env, gen);
+        array_len = gen;
+    }
     marmalade_priv.soundplayer.generateAudio(env, marmalade_priv.theloaderthread, array, frames);
     jshort *el = (*env)->GetShortArrayElements(env, array, 0);
     short *out = (short *)stream;
@@ -739,7 +852,6 @@ static void my_audio_mixer(void *udata, void *stream, int len)
         out[i] = (short)v;
     }
     (*env)->ReleaseShortArrayElements(env, array, el, 0);
-    (*env)->DeleteLocalRef(env, array);
     sound_cb_count++;
     if (sound_cb_count == 1 || (sound_cb_count % 2000) == 0)
         fprintf(stderr, "[MARM-SOUND] generateAudio cb#%lu frames=%d peak=%d vol=%d\n",
@@ -859,13 +971,20 @@ static int audioPlay(const char *filename, int repeats, long long file_offset,
             fprintf(stderr, "TODO: offset %lld for %s\n", file_offset, filename);
         /* Android resolves the path with cwd "/" (FileInputStream) and falls back
          * to the apk assets; the engine hands us "media/internal/..." without the
-         * leading slash. Also accept a pre-transcoded .ogg twin: the device's
-         * SDL_mixer has vorbis but no MP3 decoder. */
+         * leading slash. Some runs hand us "music/x.mp3", relative to the data
+         * dir passed to runNative, so try that prefix too. Also accept a
+         * pre-transcoded .ogg twin: the device's SDL_mixer has vorbis but no
+         * MP3 decoder. */
         char cand[PATH_MAX]; int k;
-        for (k = 0; k < 4 && player->music == NULL; k++) {
-            const char *base = filename;
-            snprintf(cand, sizeof(cand), "%s%s", (k & 1) && filename[0] != '/' ? "/" : "", base);
-            if (k & 2) {
+        for (k = 0; k < 6 && player->music == NULL; k++) {
+            const char *prefix = "";
+            if ((k >> 1) == 1 && filename[0] != '/') prefix = "/";
+            if ((k >> 1) == 2) {
+                if (filename[0] == '/' || marmalade_priv.home == NULL) continue;
+                prefix = marmalade_priv.home;
+            }
+            snprintf(cand, sizeof(cand), "%s%s", prefix, filename);
+            if (k & 1) {
                 char *dot = strrchr(cand, '.');
                 if (!dot || strcasecmp(dot, ".mp3") != 0) continue;
                 strcpy(dot, ".ogg");
@@ -967,6 +1086,7 @@ marmalade_CallIntMethodV(JNIEnv *env, jobject p1, jmethodID p2, va_list p3)
         int airplay = (method->sig && strncmp(method->sig, "(Ljava/lang/String;I)", 21) == 0);
         int loop = airplay ? (repeats == 0) : (repeats < 0);
         int rc = audioPlay(filename_data, loop, file_offset, file_size, channel);
+        marm_mem_log("music");
         fprintf(stderr, "[MARM-AUDIO] audioPlay -> %d\n", rc);
         free(filename_data);
         return rc;
@@ -1107,6 +1227,7 @@ marmalade_CallVoidMethodV(JNIEnv* env, jobject p1, jmethodID p2, va_list p3)
     else if(method_is(glSwapBuffers))
     {
         marm_swap_count++;
+        marm_mem_heartbeat();
         /* input_update returns nonzero on a webOS pause/focus-loss event. The
          * engine's runNative is a blocking loop we can't cleanly unwind
          * (shutdownNative crashes), so don't exit(1) on it — that was killing the
@@ -1529,6 +1650,8 @@ marmalade_init(struct SupportModule *self, int width, int height, const char *ho
     self->priv->global->module_hacks->glOrthof_rotation_hack = 1;
     self->priv->module = self;
     self->priv->home = strdup(home);
+    marm_install_term_handlers();
+    marm_mem_log("init");
 
     self->priv->accel_started = 0;
 
@@ -1668,11 +1791,13 @@ marmalade_deinit(struct SupportModule *self)
 static void
 marmalade_pause(struct SupportModule *self)
 {
+    marm_mem_log("pause");
 }
 
 static void
 marmalade_resume(struct SupportModule *self)
 {
+    marm_mem_log("resume");
 }
 
 static int

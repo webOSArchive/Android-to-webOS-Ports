@@ -1070,16 +1070,37 @@ my_glCompressedTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yo
     WRAPPERS_DEBUG_PRINTF("glCompressedTexSubImage2D()\n", target, level, xoffset, yoffset, width, height, format, imageSize, data);
     functions.glCompressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, imageSize, data);
 }
+/* Framebuffer READS (copy-to-texture, readback) take window coordinates
+ * too, so they need the same letterbox shift glViewport/glScissor get —
+ * otherwise an engine that renders into the letterboxed area and copies it
+ * back reads the bar plus a slice of its image (PvZ HD's new-plant card:
+ * black, half filled). Only on the window framebuffer, like the others. */
+static void
+apkenv_fb_read_offset(const char *fn, GLint *x, GLint *y, GLsizei w, GLsizei h)
+{
+    static int logged = 0;
+    if (apkenv_bound_fbo != 0)
+        return;
+    if (logged < 6 && (global_module_hacks.viewport_offset_x || global_module_hacks.viewport_offset_y)) {
+        logged++;
+        fprintf(stderr, "[FBREAD] %s(%d,%d,%dx%d) +%d,+%d\n", fn, *x, *y, w, h,
+                global_module_hacks.viewport_offset_x, global_module_hacks.viewport_offset_y);
+    }
+    *x += global_module_hacks.viewport_offset_x;
+    *y += global_module_hacks.viewport_offset_y;
+}
 void
 my_glCopyTexImage2D(GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border)
 {
     WRAPPERS_DEBUG_PRINTF("glCopyTexImage2D()\n", target, level, internalformat, x, y, width, height, border);
+    apkenv_fb_read_offset("glCopyTexImage2D", &x, &y, width, height);
     functions.glCopyTexImage2D(target, level, internalformat, x, y, width, height, border);
 }
 void
 my_glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height)
 {
     WRAPPERS_DEBUG_PRINTF("glCopyTexSubImage2D()\n", target, level, xoffset, yoffset, x, y, width, height);
+    apkenv_fb_read_offset("glCopyTexSubImage2D", &x, &y, width, height);
     functions.glCopyTexSubImage2D(target, level, xoffset, yoffset, x, y, width, height);
 }
 void
@@ -1544,6 +1565,7 @@ void
 my_glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *pixels)
 {
     WRAPPERS_DEBUG_PRINTF("glReadPixels(%d,%d,%d,%d,0x%x,0x%x,0x%x)\n", x, y, width, height, format, type, pixels);
+    apkenv_fb_read_offset("glReadPixels", &x, &y, width, height);
     if (global_module_hacks.gles_no_readpixels==0)
         functions.glReadPixels(x, y, width, height, format, type, pixels);
 }
