@@ -13,6 +13,7 @@
 # Output: ./apkenv  (ARM, interp /lib/ld-linux.so.3, highest sym GLIBC_2.4)
 set -e
 cd "$(dirname "$0")"
+. tools/device.sh
 
 # ── Harvest device-only libraries (fail fast if a device is needed but absent) ─
 # HP's libEGL.so is proprietary and NOT in the PalmPDK SDK, so it must come off a
@@ -46,10 +47,11 @@ harvest_device_libs() {
         exit 1
     fi
 
+    device_select
     for pair in $missing; do
         src="${pair%%:*}"; dst="${pair##*:}"
         echo "HARVEST (novacom) $src -> $dst"
-        if ! novacom get "file://$src" > "$dst" 2>/dev/null || [ ! -s "$dst" ]; then
+        if ! novacom "${ND[@]}" get "file://$src" > "$dst" 2>/dev/null || [ ! -s "$dst" ]; then
             rm -f "$dst"
             echo "ERROR: failed to pull $src from the device via novacom." >&2
             exit 1

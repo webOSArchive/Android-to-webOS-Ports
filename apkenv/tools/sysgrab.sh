@@ -25,6 +25,7 @@
 # `novacom run --` mangles the quoting of the JSON argument.
 set -e
 cd "$(dirname "$0")/.."
+. tools/device.sh; device_select
 NAME="${1:-sysgrab}"
 OUTDIR="${OUTDIR:-packaging/out/screenshots}"
 REMOTE=/tmp/apkenv-sysgrab.png
@@ -34,7 +35,7 @@ REMOTE_OUT=/tmp/apkenv-sysgrab.out
 # Every novacom call runs under `timeout --foreground` with stdin at /dev/null
 # (or a pipe): see grab.sh for the SIGTTIN hang this avoids. novacom reports a
 # remote non-zero exit as "unexpected EOF from server".
-nc_run() { timeout --foreground 60 novacom run "file://$1" -- "${@:2}" < /dev/null 2>&1 || true; }
+nc_run() { timeout --foreground 60 novacom "${ND[@]}" run "file://$1" -- "${@:2}" < /dev/null 2>&1 || true; }
 
 if ! timeout --foreground 15 novacom -l < /dev/null 2>/dev/null | grep -q .; then
     echo "sysgrab: no device on novacom" >&2
@@ -46,7 +47,7 @@ tmp=$(mktemp --suffix=.png)
 trap 'rm -f "$tmp"' EXIT
 
 # Host variables are expanded into the helper; \$ marks the device shell's own.
-timeout --foreground 30 novacom put "file://$REMOTE_SH" <<DEV
+timeout --foreground 30 novacom "${ND[@]}" put "file://$REMOTE_SH" <<DEV
 #!/bin/sh
 rm -f $REMOTE $REMOTE_OUT
 sleep 30 < /dev/null 2>/dev/null | /usr/bin/luna-send -i -n 1 palm://com.palm.systemmanager/takeScreenShot '{"file":"$REMOTE"}' > $REMOTE_OUT 2>&1 &
@@ -63,7 +64,7 @@ if ! grep -q '"returnValue" *: *true' <<<"$reply"; then
     exit 1
 fi
 
-if timeout --foreground 60 novacom get "file://$REMOTE" > "$tmp" < /dev/null 2>/dev/null && [ -s "$tmp" ]; then
+if timeout --foreground 60 novacom "${ND[@]}" get "file://$REMOTE" > "$tmp" < /dev/null 2>/dev/null && [ -s "$tmp" ]; then
     out="$OUTDIR/$NAME-$(date +%Y%m%d-%H%M%S).png"
     cp "$tmp" "$out"
     nc_run /bin/rm -f "$REMOTE" "$REMOTE_SH" >/dev/null

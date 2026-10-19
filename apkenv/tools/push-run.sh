@@ -24,13 +24,14 @@
 #     clears both.
 set -e
 cd "$(dirname "$0")/.."
+. tools/device.sh; device_select
 APPID=${APPID:?set APPID, e.g. APPID=com.apkenv.fruitninja}
 LOGNAME="${1:-push-run}"
 WAIT="${WAIT:-45}"
 APPDIR=/media/cryptofs/apps/usr/palm/applications/$APPID
 OUT=../plan/logs/$LOGNAME.log
 
-nc_run() { timeout --foreground 300 novacom run "file://$1" -- "${@:2}" < /dev/null 2>&1 || true; }
+nc_run() { timeout --foreground 300 novacom "${ND[@]}" run "file://$1" -- "${@:2}" < /dev/null 2>&1 || true; }
 
 [ -f apkenv ] || { echo "build the binary first: ./build-webos.sh"; exit 1; }
 LOCAL_MD5=$(md5sum apkenv | cut -d' ' -f1)
@@ -47,7 +48,7 @@ PID=$(nc_run /bin/pidof apkenv | tr -dc '0-9 ' | awk '{print $1}')
 [ -z "$PID" ] || { echo "apkenv still running (pid $PID) — not pushing over a live binary"; exit 1; }
 
 echo "== pushing apkenv -> $APPDIR/apkenv"
-timeout --foreground 300 novacom put "file://$APPDIR/apkenv" < apkenv
+timeout --foreground 300 novacom "${ND[@]}" put "file://$APPDIR/apkenv" < apkenv
 
 DEV_MD5=$(nc_run /usr/bin/md5sum "$APPDIR/apkenv" | tr -dc '0-9a-f \n' | awk '{print $1}' | head -1)
 echo "== device apkenv md5 $DEV_MD5"
@@ -55,11 +56,11 @@ echo "== device apkenv md5 $DEV_MD5"
 nc_run /bin/chmod 755 "$APPDIR/apkenv" >/dev/null
 
 echo "== launching"
-timeout --foreground 120 palm-launch "$APPID" 2>&1 | tail -1
+timeout --foreground 120 palm-launch "${ND[@]}" "$APPID" 2>&1 | tail -1
 echo "== waiting ${WAIT}s"
 nc_run /bin/sleep "$WAIT" >/dev/null
 
 echo "== pulling log -> $OUT"
 mkdir -p ../plan/logs
-timeout --foreground 180 novacom get "file:///media/internal/apkenv-$APPID.log" > "$OUT" < /dev/null 2>/dev/null
+timeout --foreground 180 novacom "${ND[@]}" get "file:///media/internal/apkenv-$APPID.log" > "$OUT" < /dev/null 2>/dev/null
 echo "== $(wc -l < "$OUT") lines"

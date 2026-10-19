@@ -12,6 +12,7 @@
 # is never consumed; the script says so and removes it.
 set -e
 cd "$(dirname "$0")/.."
+. tools/device.sh; device_select
 NAME="${1:-grab}"
 OUTDIR="${OUTDIR:-packaging/out/screenshots}"
 TRIGGER=/media/internal/.apkenv/grab
@@ -24,7 +25,7 @@ REMOTE=/media/internal/apkenv-grab.ppm
 # an interactive terminal it got SIGTTIN, sat stopped (state T) and hung the
 # script forever (novacom put stalled the same way). Scripts driven from a
 # non-tty never showed it.
-nc_run() { timeout --foreground 60 novacom run "file://$1" -- "${@:2}" < /dev/null 2>&1 || true; }
+nc_run() { timeout --foreground 60 novacom "${ND[@]}" run "file://$1" -- "${@:2}" < /dev/null 2>&1 || true; }
 
 if [ -z "$(nc_run /bin/pidof apkenv | tr -dc '0-9')" ]; then
     echo "grab: no apkenv running on the device" >&2
@@ -36,10 +37,10 @@ tmp=$(mktemp --suffix=.ppm)
 trap 'rm -f "$tmp"' EXIT
 
 nc_run /bin/rm -f "$REMOTE" >/dev/null
-timeout --foreground 30 novacom put "file://$TRIGGER" < /dev/null
+timeout --foreground 30 novacom "${ND[@]}" put "file://$TRIGGER" < /dev/null
 
 for _ in $(seq 1 15); do
-    if timeout --foreground 60 novacom get "file://$REMOTE" > "$tmp" < /dev/null 2>/dev/null && [ -s "$tmp" ]; then
+    if timeout --foreground 60 novacom "${ND[@]}" get "file://$REMOTE" > "$tmp" < /dev/null 2>/dev/null && [ -s "$tmp" ]; then
         out="$OUTDIR/$NAME-$(date +%Y%m%d-%H%M%S).png"
         convert "$tmp" "$out"
         nc_run /bin/rm -f "$REMOTE" >/dev/null

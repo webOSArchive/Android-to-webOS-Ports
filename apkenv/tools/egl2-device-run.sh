@@ -11,6 +11,7 @@
 #   - a hung `novacom run` wedges the HOST daemon: sudo systemctl restart novacomd
 set -e
 cd "$(dirname "$0")/.."
+. tools/device.sh; device_select
 MODE="${1:-all}"
 DEV=/var/apkenv2
 BUILD=build/webos
@@ -36,9 +37,9 @@ $LD "$BUILD/egl2test.o" -o "$BUILD/egl2test" \
     -L$PDK/device/lib -Ldevlibs -Wl,--allow-shlib-undefined \
     -lSDL -lpdl -lEGL -lGLESv2 -lGLES_CM -lm -ldl -lpthread
 
-nc_run() { timeout --foreground 300 novacom run "file://$1" -- "${@:2}"; }
-nc_put() { timeout --foreground 300 novacom put "file://$2.new" < "$1" && \
-           timeout --foreground 60 novacom run file:///bin/mv -- "$2.new" "$2"; }
+nc_run() { timeout --foreground 300 novacom "${ND[@]}" run "file://$1" -- "${@:2}"; }
+nc_put() { timeout --foreground 300 novacom "${ND[@]}" put "file://$2.new" < "$1" && \
+           timeout --foreground 60 novacom "${ND[@]}" run file:///bin/mv -- "$2.new" "$2"; }
 
 [ -n "$(timeout --foreground 20 novacom -l 2>/dev/null)" ] || {
     echo "ERROR: no device (or novacomd is wedged: sudo systemctl restart novacomd)" >&2

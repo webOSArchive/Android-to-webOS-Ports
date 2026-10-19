@@ -11,6 +11,7 @@
 #     sudo systemctl restart novacomd
 set -e
 cd "$(dirname "$0")/.."
+. tools/device.sh; device_select
 WHICH="${1:-c}"
 DEV=/var/apkenv2
 APK=../android-candidates/templerun2_1.2.1.apk
@@ -19,11 +20,11 @@ MANAGED_SRC=build/webos/tr2-managed
 # NB: the "--" separator belongs HERE only - do not repeat it at call sites,
 # or the target sees a literal "--" as its first argument (busybox then treats
 # the real flags as operands, in a read-only cwd of "/").
-nc_run() { timeout --foreground 300 novacom run "file://$1" -- "${@:2}"; }
+nc_run() { timeout --foreground 300 novacom "${ND[@]}" run "file://$1" -- "${@:2}"; }
 # Always write to a temp name and mv into place: overwriting a binary that was
 # just executed fails with "file open failed" (ETXTBSY) on the device.
-nc_put() { timeout --foreground 300 novacom put "file://$2.new" < "$1" && \
-           timeout --foreground 60 novacom run file:///bin/mv -- "$2.new" "$2"; }
+nc_put() { timeout --foreground 300 novacom "${ND[@]}" put "file://$2.new" < "$1" && \
+           timeout --foreground 60 novacom "${ND[@]}" run file:///bin/mv -- "$2.new" "$2"; }
 
 [ -n "$(timeout --foreground 20 novacom -l 2>/dev/null)" ] || {
     echo "ERROR: no device (or novacomd is wedged: sudo systemctl restart novacomd)" >&2

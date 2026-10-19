@@ -303,6 +303,11 @@ Memory: PvZ needs ~450 MB free; `requiredMemory` in `appinfo.json` makes webOS r
   SIGTTIN and sits stopped (`T` in `ps`) forever. Tools only ever driven from a non-tty (an agent's
   shell) never show it, so `tools/grab.sh` hung on the user's first run (fixed 2026-09-16 in all
   device scripts). Test a user-facing tool under a pty: `script -qec "tools/x.sh" /dev/null`.
+- **More than one pad attached? Set `DEVICE=<nduid>`** (from `novacom -l`). Without `-d`, novacom
+  and `palm-*` pick a device themselves. All device scripts source `tools/device.sh`: they pass
+  `-d $DEVICE` on every call and refuse to run when several webOS devices are attached and `DEVICE`
+  is unset. A new device script does the same: `. tools/device.sh; device_select`, then
+  `novacom "${ND[@]}" …`. (2026-10-19: the dev pad and a family member's pad were on USB together.)
   Three traps, each cost a cycle:
   **(1)** pass the `--` separator exactly once. A second one is delivered as the target's `argv[1]`,
   and busybox then treats the real flags as operands — it surfaced as
@@ -463,6 +468,12 @@ TouchPad — and the remaining work went straight back to being ordinary Java-co
 - [ ] **Fresh-install check before calling it released:** uninstall (`palm-install -r`), move the save
       dir aside, install, verify the installed binary's md5 and env on the device, launch on the fresh
       profile, and confirm the fix's own log line *and* what the player sees and hears.
+- [ ] **Save and resume:** play until the game should have saved (finish a level), quit by swiping the
+      card away, relaunch, and check the progress is still there. Then list the save files on the
+      device. PvZ HD shipped "playable" and never saved once: apkenv's `strcasecmp` prefix-matched,
+      so its save path resolved under a regular file and every write failed with no error shown
+      (`plan/PVZ-HD-menu-freeze.md` §11). If saves are missing, run `strace -f -e trace=file` on
+      the device and look for paths that make no sense.
 
 ---
 
